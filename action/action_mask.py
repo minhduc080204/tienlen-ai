@@ -1,42 +1,39 @@
 # action/action_mask.py
 import numpy as np
-from action.action_space import ACTION_SPACE
-from action.action_validator import can_apply_action
 from core.card import Card
 from core.move_type import MoveType
+from core.rules import (
+    detect_move_type
+)
 
+def build_action_mask_from_legal_moves(legal_moves, action_space):
+    mask = np.zeros(len(action_space), dtype=np.float32)
 
-def build_action_mask(
-    hand: list[Card],
-    current_trick: list[Card] | None
-) -> np.ndarray:
-    """
-    Build action mask cho PPO:
-    - 1 = action hợp lệ
-    - 0 = action bị cấm
-    """
+    has_non_pass = any(len(move) > 0 for move in legal_moves)
 
-    mask = np.zeros(len(ACTION_SPACE), dtype=np.float32)
+    for i, spec in enumerate(action_space):
 
-    for i, action in enumerate(ACTION_SPACE):
+        # PASS
+        if spec.move_type == MoveType.PASS:
+            mask[i] = 1.0 if not has_non_pass else 0.0
+            continue
 
-        # -----------------------------
-        # ❌ LUẬT QUAN TRỌNG NHẤT
-        # Không được PASS khi chưa có trick
-        # -----------------------------
-        if action.move_type == MoveType.PASS:
-            if current_trick is None:
-                mask[i] = 0.0
+        for move in legal_moves:
+            if not move:
                 continue
 
-        # -----------------------------
-        # Kiểm tra action có áp dụng được không
-        # -----------------------------
-        if can_apply_action(
-            action=action,
-            hand=hand,
-            current_trick=current_trick
-        ):
-            mask[i] = 1.0
+            if (
+                detect_move_type(move) == spec.move_type
+                and len(move) == spec.length
+            ):
+                mask[i] = 1.0
+                break
+
+    # fallback: đảm bảo không all-zero
+    if mask.sum() == 0:
+        for i, spec in enumerate(action_space):
+            if spec.move_type == MoveType.PASS:
+                mask[i] = 1.0
+                break
 
     return mask

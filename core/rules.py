@@ -1,3 +1,4 @@
+# core/rule.py
 from collections import Counter
 from typing import List
 from core.card import Card

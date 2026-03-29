@@ -1,10 +1,9 @@
 # train/train_loop.py
-
 import torch
 
 from env.tienlen_env import TienLenEnv
 from state.state_encoder import encode_state
-from action.action_mask import build_action_mask
+from action.action_mask import build_action_mask_from_legal_moves
 from action.action_space import ACTION_SPACE
 
 from rl.agent import PPOAgent
@@ -20,6 +19,12 @@ from state.state_dim import STATE_DIM
 import argparse
 import train.config as config
 from utils.logger import setup_logger
+from utils.turn_logger import log_turn
+import os
+from core.move_type import MoveType
+from core.rules import (
+    get_legal_moves,
+)
 
 def parse_args():
     parser = argparse.ArgumentParser("PPO Train Tiến Lên")
@@ -60,6 +65,9 @@ def train():
     NUM_PLAYERS=config.NUM_PLAYERS
     MAX_TURNS_PER_EP=config.MAX_TURNS_PER_EP
     AI_PLAYER_ID=config.AI_PLAYER_ID
+
+    LOG_TURN = config.LOG_TURN
+    LOG_TURN_EPISODE = config.LOG_TURN_EPISODE
     
     print("🚀 Start PPO Training")
 
@@ -82,6 +90,11 @@ def train():
         clip_eps=0.2
     )
 
+    latest_ckpt = "checkpoints/latest.pt"
+
+    if os.path.exists(latest_ckpt):
+        print("🔄 Loading checkpoint...")
+        agent.load(latest_ckpt)
 
     rule_bot = RuleBot(player_id=1)
     buffer = RolloutBuffer()
@@ -115,7 +128,7 @@ def train():
             # AI TURN
             # =====================
             if current_pid == AI_PLAYER_ID:
-                player_hand = state.hands[AI_PLAYER_ID]
+                player_hand = state.hands[AI_PLAYER_ID]                
 
                 opponent_hands = [
                     hand
@@ -135,20 +148,32 @@ def train():
                     num_players=NUM_PLAYERS
                 )
 
-                state_tensor = torch.tensor(
-                    state_vec,
-                    dtype=torch.float32
-                ).unsqueeze(0)   # (1, STATE_DIM)
+                state_tensor = torch.from_numpy(state_vec).float().unsqueeze(0)
+                # state_tensor = torch.tensor(
+                #     state_vec,
+                #     dtype=torch.float32
+                # ).unsqueeze(0)   # (1, STATE_DIM)
 
-                action_mask = build_action_mask(
+                # action_mask = build_action_mask(
+                #     hand=env.state.hands[AI_PLAYER_ID],
+                #     current_trick=env.state.current_trick
+                # )
+
+                legal_moves = get_legal_moves(
                     hand=env.state.hands[AI_PLAYER_ID],
                     current_trick=env.state.current_trick
                 )
 
-                action_mask = torch.tensor(
-                    action_mask,
-                    dtype=torch.float32
-                ).unsqueeze(0)   # (1, action_dim)
+                action_mask = build_action_mask_from_legal_moves(
+                    legal_moves=legal_moves,
+                    action_space=ACTION_SPACE
+                )
+
+                action_mask = torch.from_numpy(action_mask).unsqueeze(0)
+                # action_mask = torch.tensor(
+                #     action_mask,
+                #     dtype=torch.float32
+                # ).unsqueeze(0)   # (1, action_dim)
 
 
                 action_id, logprob, value = agent.act(
@@ -163,6 +188,19 @@ def train():
                     hand=env.state.hands[AI_PLAYER_ID],
                     current_trick=env.state.current_trick
                 )
+                # action_cards = build_cards_from_spec(
+                #     spec=action_spec,
+                #     hand=env.state.hands[AI_PLAYER_ID],
+                #     current_trick=env.state.current_trick
+                # )
+                if LOG_TURN and episode == LOG_TURN_EPISODE:
+                    log_turn(
+                        episode=episode,
+                        turn=turn_count,
+                        env=env,
+                        action_spec=action_spec,
+                        action_cards=action_cards
+                    )
 
 
             # =====================
@@ -173,11 +211,16 @@ def train():
                     state,
                     current_pid
                 )
+                if LOG_TURN and episode == LOG_TURN_EPISODE:
+                    log_turn(
+                        episode=episode,
+                        turn=turn_count,
+                        env=env,
+                        action_spec=None,
+                        action_cards=action_cards
+                    )
 
-            # =====================
-            # ENV STEP
-            # =====================
-            step_result: StepResult = env.step(action_cards)
+            step_result = env.step(action_cards)
 
             reward = step_result.reward
 
@@ -198,27 +241,27 @@ def train():
             state = step_result.state
             done = step_result.done
 
-            # =========================
-            # 4️⃣ PPO UPDATE
-            # =========================
-            if len(buffer) > 0:
-                advantages, returns = buffer.compute_gae(
-                    gamma=GAMMA,
-                    lam=LAMBDA
-                )
+        # =========================
+        # 4️⃣ PPO UPDATE
+        # =========================
+        if len(buffer) > 0:
+            advantages, returns = buffer.compute_gae(
+                gamma=GAMMA,
+                lam=LAMBDA
+            )
 
-                agent.update(
-                    states=buffer.states,
-                    actions=buffer.actions,
-                    old_logprobs=buffer.logprobs,
-                    returns=returns,
-                    advantages=advantages,
-                    action_masks=buffer.action_masks,
-                    epochs=PPO_EPOCHS,
-                    batch_size=BATCH_SIZE
-                )
+            agent.update(
+                states=buffer.states,
+                actions=buffer.actions,
+                old_logprobs=buffer.logprobs,
+                returns=returns,
+                advantages=advantages,
+                action_masks=buffer.action_masks,
+                epochs=PPO_EPOCHS,
+                batch_size=BATCH_SIZE
+            )
 
-                buffer.clear()
+            buffer.clear()
 
 
         # =========================

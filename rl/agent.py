@@ -2,6 +2,8 @@ import torch
 import numpy as np
 import torch.nn.functional as F
 from torch.utils.data import BatchSampler, SubsetRandomSampler
+import os
+os.makedirs("checkpoints", exist_ok=True)
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("🚀 PPO using device:", device)
@@ -14,6 +16,18 @@ class PPOAgent:
         self.clip_eps = clip_eps
         self.entropy_coef = entropy_coef
         self.value_coef = value_coef
+
+    def save(self, path):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        torch.save({
+            'model': self.model.state_dict(),
+            'optimizer': self.optimizer.state_dict()
+        }, path)
+
+    def load(self, path):
+        checkpoint = torch.load(path, map_location=device)
+        self.model.load_state_dict(checkpoint['model'])
+        self.optimizer.load_state_dict(checkpoint['optimizer'])
 
     def act(self, state, action_mask):
         if not torch.is_tensor(state):

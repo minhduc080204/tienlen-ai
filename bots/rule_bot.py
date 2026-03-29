@@ -5,6 +5,7 @@ from core.rules import (
     detect_move_type
 )
 from core.move_type import MoveType
+from bots.hand_analyzer import HandAnalyzer
 
 
 class RuleBot:
@@ -17,6 +18,8 @@ class RuleBot:
 
     def __init__(self, player_id: int):
         self.player_id = player_id
+        self.analyzer = HandAnalyzer()
+
 
     # ========================
     # PUBLIC API (chuẩn hoá)
@@ -34,28 +37,47 @@ class RuleBot:
         hand = state.hands[player_id]
         current_trick = state.current_trick
 
-        # 1️⃣ Không có bài → PASS
         if not hand:
             return []
 
-        # 2️⃣ Lấy danh sách nước hợp lệ
-        legal_moves = [
-            move for move in get_legal_moves(hand, current_trick)
-            if len(move) > 0
-        ]
-
-        # 3️⃣ Không có nước đi → PASS
+        legal_moves = get_legal_moves(hand, current_trick)
         if not legal_moves:
             return []
 
-        # 4️⃣ Sắp xếp theo độ ưu tiên
-        legal_moves.sort(
-            key=lambda cards: (
-                self._priority(cards),
-                self._min_rank(cards)
-            )
-        )
+        # ==========================
+        # 1️⃣ XẾP BÀI
+        # ==========================
+        plan = self.analyzer.analyze(hand)
 
+        # ==========================
+        # 2️⃣ THEO BÀI
+        # ==========================
+        if current_trick is not None:
+            # chỉ đánh SINGLE từ singles
+            if detect_move_type(current_trick) == MoveType.SINGLE:
+                for combo in plan.singles:
+                    card = combo[0]
+
+                    # ❌ nếu lá này thuộc triple → bỏ qua
+                    in_triple = any(card in t for t in plan.triples)
+                    if in_triple:
+                        continue
+
+                    if combo in legal_moves:
+                        return combo
+
+            return []
+
+        # ==========================
+        # 3️⃣ ĐÁNH ĐẦU
+        # ==========================
+        if plan.singles:
+            return plan.singles[0]
+
+        if plan.pairs:
+            return plan.pairs[0]
+
+        # fallback
         return legal_moves[0]
 
     # ------------------------

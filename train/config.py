@@ -28,3 +28,6 @@ LR = 2.5e-4                # ổn định hơn 3e-4
 MAX_TURNS_PER_GAME = 300   # tránh ván treo
 ENTROPY_COEF = 0.01
 VALUE_COEF = 0.5
+
+LOG_TURN = True
+LOG_TURN_EPISODE = 1
