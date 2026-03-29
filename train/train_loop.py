@@ -130,8 +130,8 @@ def train():
             if current_pid == AI_PLAYER_ID:
                 player_hand = state.hands[AI_PLAYER_ID]                
 
-                opponent_hands = [
-                    hand
+                opponent_counts = [
+                    len(hand)
                     for pid, hand in enumerate(state.hands)
                     if pid != AI_PLAYER_ID
                 ]
@@ -142,7 +142,7 @@ def train():
                 state_vec = encode_state(
                     hand=player_hand,
                     discard_pile=discard_pile,
-                    opponent_hands=opponent_hands,
+                    opponent_counts=opponent_counts,
                     current_trick=state.current_trick,
                     player_id=AI_PLAYER_ID,
                     num_players=NUM_PLAYERS

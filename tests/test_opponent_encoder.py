@@ -4,13 +4,13 @@ from state.opponent_encoder import encode_opponents
 
 def test_encode_opponents_shape():
     opponents = [
-        [Card("3","♠")] * 5,
-        [Card("4","♠")] * 2,
-        [Card("5","♠")] * 7,
+        5,
+        2,
+        7,
     ]
 
     vec = encode_opponents(
-        opponent_hands=opponents,
+        opponent_counts=opponents,
         player_id=0,
         num_players=4,
     )

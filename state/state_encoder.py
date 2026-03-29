@@ -11,7 +11,7 @@ from state.discard_encoder import encode_discard_pile
 def encode_state(
     hand: list[Card],
     discard_pile: list[Card],
-    opponent_hands: list[list[Card]],
+    opponent_counts: list[int],
     current_trick: list[Card] | None,
     player_id: int,
     num_players: int,
@@ -34,7 +34,7 @@ def encode_state(
     # C️⃣ Opponent info (12)
     # --------------------
     opponent_vec = encode_opponents(
-        opponent_hands=opponent_hands,
+        opponent_counts=opponent_counts,
         player_id=player_id,
         num_players=num_players,
     )
