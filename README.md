@@ -3,6 +3,7 @@ python -m venv venv
 
 # Then activate it
 .\venv\Scripts\activate
+source venv/bin/activate
 
 # Then install libery
 pip install -r requirements.txt
