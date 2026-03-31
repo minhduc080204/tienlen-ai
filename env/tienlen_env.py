@@ -58,12 +58,15 @@ class TienLenEnv:
         # =====================
         if not action_cards:
             if state.current_trick is None:
-                reward = -0.1
+                # ❌ LỖI NGHIÊM TRỌNG: PASS KHI ĐANG CẦM CÁI
+                # Kết thúc episode ngay lập tức với penalty cực lớn để AI không bao giờ học theo
+                state.finished = True
+                state.winner = (player + 1) % self.num_players # Ai đó khác thắng
                 return StepResult(
                     state=state,
-                    reward=reward,
-                    done=False,
-                    info={"action": "INVALID_PASS"}
+                    reward=-100.0, 
+                    done=True,
+                    info={"action": "INVALID_PASS_TERMINATED"}
                 )
 
             next_player = (player + 1) % self.num_players
