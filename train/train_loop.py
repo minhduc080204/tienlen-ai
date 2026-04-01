@@ -160,7 +160,7 @@ def train():
                 )
 
         # 5️⃣ Logging & Checkpoint
-        if episode % 10 == 0 or episode == 1:
+        if episode % 10 == 0:
             print(f"🔹 Ep {episode} | Winner: P{state.winner} | Turns: {turn_count}")
 
         if episode % args.save_every == 0:

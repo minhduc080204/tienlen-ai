@@ -7,6 +7,6 @@ def test_first_player_can_play():
     player = state.current_player
     card = state.hands[player][0]
 
-    state, reward, done, info = env.step([card])
-    assert done is False
+    result = env.step([card])
+    assert result.done is False
 
