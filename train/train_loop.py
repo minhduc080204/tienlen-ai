@@ -244,7 +244,7 @@ def train():
         # 5️⃣ Logging & Checkpoint
         if episode % 10 == 0:
             summary = tracker.get_summary(last_n=10)
-            print(f"🔹 Ep {episode} | Winner: P{state.winner} | Turn: {summary['avg_turns']:.1f} | WR: {summary['win_rate']:.2f} | Rew: {summary['avg_reward']:.1f} | Entropy: {summary['avg_entropy']:.3f}")
+            print(f"🔹 Ep {episode} | Winner: P{state.winner} | Turn: {turn_count} | WR: {summary['win_rate']:.2f} | Rew: {summary['avg_reward']:.1f} | Entropy: {summary['avg_entropy']:.3f}")
             tracker.save_to_csv(episode, summary['win_rate'], summary['avg_reward'], summary['avg_turns'], summary['avg_entropy'], summary['move_stats'])
 
         if episode % args.eval_every == 0:
