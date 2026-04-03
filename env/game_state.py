@@ -1,5 +1,7 @@
-from dataclasses import dataclass
+# env/game_state.py
+from dataclasses import dataclass, field
 from core.card import Card
+
 
 @dataclass
 class GameState:
@@ -9,3 +11,4 @@ class GameState:
     last_player: int | None = None
     finished: bool = False
     winner: int | None = None
+    discard_pile: list[Card] = field(default_factory=list)

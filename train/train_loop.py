@@ -136,8 +136,7 @@ def train():
                     if pid != AI_PLAYER_ID
                 ]
 
-                # discard_pile = env.discard_pile   # hoặc [] nếu chưa có
-                discard_pile = []   # hoặc [] nếu chưa có
+                discard_pile = state.discard_pile   # track bài đã ra
 
                 state_vec = encode_state(
                     hand=player_hand,
