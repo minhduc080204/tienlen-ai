@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException
 import torch
+from core.card import Card
 
 # ===== IMPORT PROJECT =====
 from rl.model import TienLenPolicy
@@ -26,12 +27,14 @@ optimizer = torch.optim.Adam(model.parameters())
 
 agent = PPOAgent(model=model, optimizer=optimizer)
 
-CHECKPOINT_PATH = "checkpoints/latest.pt"
+EASY_CHECKPOINT_PATH = "checkpoints/latest.pt"
+MEDIUM_CHECKPOINT_PATH = "checkpoints/ppo.pt"
+HARD_CHECKPOINT_PATH = "checkpoints/ppo_shared.pt"
 
 try:
-    agent.load(CHECKPOINT_PATH)
+    agent.load(MEDIUM_CHECKPOINT_PATH)
     model.eval()
-    print(f"✅ Model loaded from {CHECKPOINT_PATH}")
+    print(f"✅ Model loaded from {MEDIUM_CHECKPOINT_PATH}")
 except Exception as e:
     print("❌ Failed to load model:", e)
 
@@ -49,7 +52,7 @@ def predict(data: dict):
     Input:
     {
         "hand": [...],
-        "opponent_counts": [[...], [...], [...]],
+        "opponent_counts": [1, 2, 3],
         "current_trick": [...],
         "player_id": int,
         "num_players": int
@@ -57,24 +60,33 @@ def predict(data: dict):
     """
 
     try:
-        hand = data["hand"]
+        # 1. Parse dữ liệu cực kỳ gọn gàng
+        hand_cards = [Card.from_ints(c["rank"], c["suit"]) for c in data.get("hand", [])]
+        current_trick_cards = [Card.from_ints(c["rank"], c["suit"]) for c in data.get("current_trick", [])]
+
         opponent_counts = data["opponent_counts"]
-        current_trick = data["current_trick"]
         player_id = data["player_id"]
         num_players = data["num_players"]
 
-        action_id = predict_action(
+        action_id, cards_to_play = predict_action(
             agent=agent,
             device=device,
-            hand=hand,
+            hand=hand_cards,
             opponent_counts=opponent_counts,
-            current_trick=current_trick,
+            current_trick=current_trick_cards,
             player_id=player_id,
             num_players=num_players
         )
 
+        action_cards = [
+            {"rank": card.rank_value, "suit": card.suit_value} 
+            for card in cards_to_play
+        ]
+
         return {
-            "action_id": action_id
+            "action_id": action_id,
+            "action_cards": action_cards,
+            "message": "Pass" if len(action_cards) == 0 else "Play cards"
         }
 
     except KeyError as e:

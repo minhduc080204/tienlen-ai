@@ -12,6 +12,14 @@ class Card:
     rank: str
     suit: str
 
+    @classmethod
+    def from_ints(cls, rank_int: int, suit_int: int) -> "Card":
+        """
+        Khởi tạo Card trực tiếp từ int (rank: 0-12, suit: 0-3)
+        Ví dụ: Card.from_ints(0, 0) -> Card(rank='3', suit='♠')
+        """
+        return cls(rank=RANKS[rank_int], suit=SUITS[suit_int])
+
     @property
     def rank_value(self) -> int:
         return RANK_TO_VALUE[self.rank]
