@@ -2,101 +2,104 @@
 
 from core.rules import (
     get_legal_moves,
-    detect_move_type
+    detect_move_type,
+    can_beat
 )
 from core.move_type import MoveType
-from bots.hand_analyzer import HandAnalyzer
+from bots.hand_analyzer import HandAnalyzer, HandPlan
 
 
 class RuleBot:
     """
-    Rule-based bot:
-    - Chỉ đánh nước hợp lệ
-    - Ưu tiên bài nhỏ
-    - Dùng làm đối thủ train PPO
+    Rule-based bot nâng cấp:
+    - Có chiến thuật End-game (chặn đường về của đối thủ).
+    - Biết giữ bài mạnh (Safe play).
+    - Biết xé bộ khi cần thiết để giành lượt.
     """
 
     def __init__(self, player_id: int):
         self.player_id = player_id
         self.analyzer = HandAnalyzer()
 
-
-    # ========================
-    # PUBLIC API (chuẩn hoá)
-    # ========================
     def act(self, state):
-        """
-        Train loop sẽ gọi hàm này
-        """
         return self.select_action(state, self.player_id)
 
-    # ========================
-    # CORE LOGIC
-    # ========================
     def select_action(self, state, player_id):
         hand = state.hands[player_id]
         current_trick = state.current_trick
+        
+        # 1. Tính toán số bài của đối thủ
+        num_players = len(state.hands)
+        opp_counts = [len(state.hands[i]) for i in range(num_players) if i != player_id]
+        is_end_game = any(c <= 3 for c in opp_counts) if opp_counts else False
 
         if not hand:
             return []
 
-        legal_moves = get_legal_moves(hand, current_trick)
-        if not legal_moves:
-            return []
-
-        # ==========================
-        # 1️⃣ XẾP BÀI
-        # ==========================
+        # 2. Phân tích bài thành các bộ tối ưu
         plan = self.analyzer.analyze(hand)
+        
+        # 3. Lấy danh sách nước đi hợp lệ
+        legal_moves = get_legal_moves(hand, current_trick)
+        if not legal_moves or (current_trick is not None and len(legal_moves) == 1 and not legal_moves[0]):
+            return [] # Chỉ có duy nhất nước PASS
 
-        # ==========================
-        # 2️⃣ THEO BÀI
-        # ==========================
-        if current_trick is not None:
-            # chỉ đánh SINGLE từ singles
-            if detect_move_type(current_trick) == MoveType.SINGLE:
-                for combo in plan.singles:
-                    card = combo[0]
+        # ==========================================
+        # TRƯỜNG HỢP: ĐƯỢC CẦM CÁI (FREE TURN)
+        # ==========================================
+        if current_trick is None:
+            if is_end_game:
+                # Chế độ End-game: Đánh bộ lớn nhất hoặc lá lớn nhất để về nhanh
+                all_combos = plan.get_all_combos()
+                # Ưu tiên đánh sảnh dài nhất hoặc bộ nhiều lá nhất trước
+                all_combos.sort(key=lambda x: (len(x), max(c.rank for c in x)), reverse=True)
+                return all_combos[0]
+            else:
+                # Chế độ bình thường: Ưu tiên xả rác nhỏ hoặc bộ nhỏ
+                # Ưu tiên: Sảnh nhỏ -> Ba nhỏ -> Đôi nhỏ -> Rác nhỏ
+                if plan.straights: return plan.straights[0]
+                if plan.triples: return plan.triples[0]
+                if plan.pairs: return plan.pairs[0]
+                return plan.singles[0]
 
-                    # ❌ nếu lá này thuộc triple → bỏ qua
-                    in_triple = any(card in t for t in plan.triples)
-                    if in_triple:
-                        continue
-
-                    if combo in legal_moves:
-                        return combo
-
+        # ==========================================
+        # TRƯỜNG HỢP: THEO BÀI (FOLLOW TURN)
+        # ==========================================
+        target_type = detect_move_type(current_trick)
+        
+        # Lọc ra các nước có thể thắng (bỏ qua PASS)
+        winning_moves = [m for m in legal_moves if m]
+        if not winning_moves:
             return []
 
-        # ==========================
-        # 3️⃣ ĐÁNH ĐẦU
-        # ==========================
-        if plan.singles:
-            return plan.singles[0]
+        # Logic chọn nước đi tối ưu dựa trên loại bộ đang đánh
+        if is_end_game:
+            # Nếu đối thủ sắp về, đánh lá LỚN NHẤT có thể để chặn
+            winning_moves.sort(key=lambda x: (max(c.rank for c in x), max(c.suit for c in x)), reverse=True)
+            return winning_moves[0]
+        
+        # Chế độ bình thường: Cố gắng thắng bằng lá NHỎ NHẤT có thể
+        winning_moves.sort(key=lambda x: (max(c.rank for c in x), max(c.suit for c in x)))
 
-        if plan.pairs:
-            return plan.pairs[0]
+        # "Safe Play": Không đánh 2 (heo) hoặc A bừa bãi nếu bài còn quá nhiều
+        best_small_move = winning_moves[0]
+        max_rank_in_move = max(c.rank for c in best_small_move)
+        
+        if max_rank_in_move >= 14: # A hoặc 2
+            # Nếu bài còn nhiều (> 7 lá), và không phải là nước cuối, cân nhắc bỏ qua
+            if len(hand) > 7 and not self._is_guaranteed_win(hand, best_small_move):
+                return [] # PASS để giữ bài to
 
-        # fallback
-        return legal_moves[0]
+        # "Xé bộ": Nếu đối thủ đánh lẻ mà mình không có rác để chặn, xem xét xé đôi nhỏ
+        if target_type == MoveType.SINGLE and not any(m for m in winning_moves if m[0] in [c[0] for c in plan.singles]):
+            # Tìm trong plan.pairs xem có đôi nào nhỏ (rank < 10) có thể xé không
+            for pair in plan.pairs:
+                for card in pair:
+                    if can_beat(current_trick, [card]):
+                        return [card]
 
-    # ------------------------
-    # Helpers
-    # ------------------------
+        return best_small_move
 
-    def _priority(self, cards):
-        move_type = detect_move_type(cards)
-
-        priority = {
-            MoveType.SINGLE: 0,
-            MoveType.PAIR: 1,
-            MoveType.TRIPLE: 2,
-            MoveType.STRAIGHT: 3,
-            MoveType.DOUBLE_STRAIGHT: 4,
-            MoveType.FOUR_OF_KIND: 5,
-            MoveType.TWO: 6,
-        }
-        return priority.get(move_type, 99)
-
-    def _min_rank(self, cards):
-        return min(card.rank for card in cards)
+    def _is_guaranteed_win(self, hand, move):
+        """Kiểm tra xem nước đi này có giúp mình nắm chắc phần thắng không (Heuristic)"""
+        return len(hand) - len(move) <= 2
