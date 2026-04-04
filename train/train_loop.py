@@ -90,7 +90,7 @@ def train():
 
         # Reset Game
         state = env.reset()
-        done = state.finished # Initialize 'done' from 'state.finished'
+        done = state.finished
         turn_count = 0
         ep_reward_0 = 0
 
@@ -128,15 +128,15 @@ def train():
                 action_cards = resolve_action(ACTION_SPACE[action_id], state.hands[curr_pid], state.current_trick)
                 step_res = env.step(action_cards)
                 
-                # 5. Store Experience (Phase 1,2: chỉ Player 0 | Phase 3: Tất cả)
+                # 5. Store Experience
                 if curr_pid == 0 or phase == 3:
                     episode_buffers[curr_pid].add(
                         state=state_vec,
                         action=action_id,
-                        logprob=logprob, # Truyền Tensor
+                        logprob=logprob,
                         reward=step_res.reward,
                         done=step_res.done,
-                        value=val,       # Truyền Tensor
+                        value=val,
                         action_mask=mask
                     )
                 
@@ -159,23 +159,19 @@ def train():
             if len(episode_buffers[i]) > 0:
                 final_reward = 30.0 if i == winner else -30.0
                 episode_buffers[i].rewards[-1] += final_reward
-                
-                # Tính GAE cục bộ cho episode
                 adv, ret = episode_buffers[i].compute_gae(config.GAMMA, config.LAMBDA)
-                
-                # Tích lũy vào Buffer huấn luyện chính
                 cumulative_buffer.extend(episode_buffers[i], adv, ret)
 
         # --- MODEL UPDATE ---
         if len(cumulative_buffer) >= config.BATCH_SIZE:
-            # Giai đoạn update sử dụng hàm update chuẩn của PPOAgent
+            # Gửi thẳng List/Numpy vào, Agent sẽ tự chuyển sang Tensor an toàn
             main_agent.update(
-                states=np.array(cumulative_buffer.states),
-                actions=torch.tensor(cumulative_buffer.actions, device=device),
-                old_logprobs=torch.stack(cumulative_buffer.logprobs).to(device).flatten(),
-                returns=torch.stack(cumulative_buffer.returns).to(device).flatten(),
-                advantages=torch.stack(cumulative_buffer.advantages).to(device).flatten(),
-                action_masks=torch.tensor(np.array(cumulative_buffer.action_masks), device=device),
+                states=cumulative_buffer.states,
+                actions=cumulative_buffer.actions,
+                old_logprobs=cumulative_buffer.logprobs,
+                returns=cumulative_buffer.returns,
+                advantages=cumulative_buffer.advantages,
+                action_masks=cumulative_buffer.action_masks,
                 epochs=config.PPO_EPOCHS,
                 batch_size=config.BATCH_SIZE
             )
