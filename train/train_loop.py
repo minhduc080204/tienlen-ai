@@ -12,7 +12,7 @@ from state.state_dim import STATE_DIM
 from action.action_mask import build_action_mask_from_legal_moves
 from action.action_space import ACTION_SPACE
 from core.action_executor import resolve_action
-from core.rules import get_legal_moves
+from core.rules import get_legal_moves, detect_move_type
 
 from rl.agent import PPOAgent
 from rl.model import TienLenPolicy
@@ -122,10 +122,18 @@ def train():
                 mask_t = torch.as_tensor(mask, device=device, dtype=torch.bool).unsqueeze(0)
                 
                 with torch.no_grad():
-                    action_id, logprob, val, _ = agent.act(state_t, mask_t)
+                    action_id, logprob, val, entropy = agent.act(state_t, mask_t)
                 
                 # 4. Resolve Action & Step
                 action_cards = resolve_action(ACTION_SPACE[action_id], state.hands[curr_pid], state.current_trick)
+                
+                # Record move stats for player 0
+                if curr_pid == 0:
+                    move_type = detect_move_type(action_cards)
+                    if move_type:
+                        tracker.record_move(move_type)
+                    tracker.record_entropy(entropy)
+
                 step_res = env.step(action_cards)
                 
                 # 5. Store Experience
@@ -154,6 +162,9 @@ def train():
         winner = state.winner
         win_history.append(1 if winner == 0 else 0)
         
+        # Record episode metrics
+        tracker.record_episode(episode, winner, ep_reward_0, turn_count)
+
         # Terminal Reward & GAE
         for i in range(config.NUM_PLAYERS):
             if len(episode_buffers[i]) > 0:
@@ -163,9 +174,10 @@ def train():
                 cumulative_buffer.extend(episode_buffers[i], adv, ret)
 
         # --- MODEL UPDATE ---
+        last_losses = {"policy_loss": 0, "value_loss": 0, "entropy_loss": 0}
         if len(cumulative_buffer) >= config.BATCH_SIZE:
             # Gửi thẳng List/Numpy vào, Agent sẽ tự chuyển sang Tensor an toàn
-            main_agent.update(
+            last_losses = main_agent.update(
                 states=cumulative_buffer.states,
                 actions=cumulative_buffer.actions,
                 old_logprobs=cumulative_buffer.logprobs,
@@ -180,9 +192,24 @@ def train():
 
         # --- LOGGING ---
         if episode % 20 == 0:
-            avg_win_rate = sum(win_history) / len(win_history) if win_history else 0
-            print(f"Ep {episode} [{phase}] | WR: {avg_win_rate:.2f} | Best WR: {best_win_rate:.2f} | Rew: {ep_reward_0:.1f}")
+            summary = tracker.get_summary(last_n=20)
+            avg_win_rate = summary["win_rate"]
             
+            print(f"Ep {episode} [{phase}] | WR: {avg_win_rate:.2f} | Best WR: {best_win_rate:.2f} | Rew: {summary['avg_reward']:.1f}")
+            
+            # Save CSV
+            tracker.save_to_csv(
+                episode=episode,
+                phase=phase,
+                win_rate=avg_win_rate,
+                best_win_rate=best_win_rate,
+                avg_reward=summary["avg_reward"],
+                avg_turns=summary["avg_turns"],
+                avg_entropy=summary["avg_entropy"],
+                losses=last_losses,
+                move_stats=summary["move_stats"]
+            )
+
             main_agent.save(latest_path)
             if avg_win_rate > best_win_rate and episode > config.WINDOW_SIZE:
                 best_win_rate = avg_win_rate

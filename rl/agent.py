@@ -111,6 +111,12 @@ class PPOAgent:
 
         B = states.size(0)
 
+        # ========= PPO OPTIMIZATION =========
+        total_policy_loss = 0
+        total_value_loss = 0
+        total_entropy_loss = 0
+        num_batches = 0
+
         for _ in range(epochs):
             sampler = BatchSampler(
                 SubsetRandomSampler(range(B)),
@@ -149,3 +155,14 @@ class PPOAgent:
                 loss.backward()
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), 0.5)
                 self.optimizer.step()
+
+                total_policy_loss += policy_loss.item()
+                total_value_loss += value_loss.item()
+                total_entropy_loss += entropy.item()
+                num_batches += 1
+
+        return {
+            "policy_loss": total_policy_loss / num_batches if num_batches > 0 else 0,
+            "value_loss": total_value_loss / num_batches if num_batches > 0 else 0,
+            "entropy_loss": total_entropy_loss / num_batches if num_batches > 0 else 0
+        }
