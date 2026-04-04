@@ -48,9 +48,13 @@ class RuleBot:
         # TRƯỜNG HỢP: ĐƯỢC CẦM CÁI (FREE TURN)
         # ==========================================
         if current_trick is None:
+            all_combos = plan.get_all_combos()
+            if not all_combos:
+                # Fallback: if somehow everything failed, play any legal move
+                return legal_moves[0] if legal_moves else []
+
             if is_end_game:
                 # Chế độ End-game: Đánh bộ lớn nhất hoặc lá lớn nhất để về nhanh
-                all_combos = plan.get_all_combos()
                 # Ưu tiên đánh sảnh dài nhất hoặc bộ nhiều lá nhất trước
                 all_combos.sort(key=lambda x: (len(x), max(c.rank for c in x)), reverse=True)
                 return all_combos[0]
@@ -60,7 +64,7 @@ class RuleBot:
                 if plan.straights: return plan.straights[0]
                 if plan.triples: return plan.triples[0]
                 if plan.pairs: return plan.pairs[0]
-                return plan.singles[0]
+                return all_combos[0] # Lấy bộ nhỏ nhất có thể
 
         # ==========================================
         # TRƯỜNG HỢP: THEO BÀI (FOLLOW TURN)

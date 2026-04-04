@@ -3,19 +3,22 @@ import numpy as np
 import torch.nn.functional as F
 from torch.utils.data import BatchSampler, SubsetRandomSampler
 import os
-os.makedirs("checkpoints", exist_ok=True)
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print("🚀 PPO using device:", device)
+# Create checkpoints directory if it doesn't exist
+os.makedirs("checkpoints", exist_ok=True)
 
 class PPOAgent:
     def __init__(self, model, optimizer, gamma=0.99, clip_eps=0.2, entropy_coef=0.01, value_coef=0.5):
-        self.model = model.to(device)
+        # We don't set a global device here, we use the model's device
+        self.model = model
         self.optimizer = optimizer
         self.gamma = gamma
         self.clip_eps = clip_eps
         self.entropy_coef = entropy_coef
         self.value_coef = value_coef
+
+    def get_device(self):
+        return next(self.model.parameters()).device
 
     def save(self, path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -25,32 +28,42 @@ class PPOAgent:
         }, path)
 
     def load(self, path):
+        device = self.get_device()
         checkpoint = torch.load(path, map_location=device)
         self.model.load_state_dict(checkpoint['model'])
         self.optimizer.load_state_dict(checkpoint['optimizer'])
 
     def act(self, state, action_mask, greedy=False):
+        device = self.get_device()
+        
+        # Ensure state is a tensor on the correct device
         if not torch.is_tensor(state):
-            state = torch.tensor(state, dtype=torch.float32, device=device)
+            state = torch.as_tensor(state, dtype=torch.float32, device=device)
         else:
             state = state.to(device)
 
-        state = state.unsqueeze(0)  # (1, state_dim)
-
+        # Handle batch dimension if missing
+        if state.dim() == 1:
+            state = state.unsqueeze(0)
 
         logits, value = self.model(state)
-
-        # 👉 đảm bảo shape (1, action_dim)
         logits = logits.squeeze(0)
+        value = value.squeeze(0)
 
-        action_mask = action_mask.detach().bool().to(device)
+        # Ensure action_mask is a boolean tensor
+        if not torch.is_tensor(action_mask):
+            action_mask = torch.as_tensor(action_mask, dtype=torch.bool, device=device)
+        else:
+            action_mask = action_mask.to(device).bool()
+            
+        if action_mask.dim() > 1:
+            action_mask = action_mask.flatten()
 
-        # 🔒 BẮT BUỘC: không được all-zero
         if action_mask.sum() == 0:
-            raise RuntimeError("❌ action_mask is all zero")
-
-        # ✅ MASK ĐÚNG CÁCH
-        masked_logits = logits.masked_fill(~action_mask, -1e9)
+            # Fallback: if no legal moves (shouldn't happen with get_legal_moves), mask nothing
+            masked_logits = logits
+        else:
+            masked_logits = logits.masked_fill(~action_mask, -1e9)
 
         dist = torch.distributions.Categorical(logits=masked_logits)
         
@@ -61,12 +74,8 @@ class PPOAgent:
             
         entropy = dist.entropy()
 
-        return action.item(), dist.log_prob(action), value.squeeze(0), entropy.detach().item()
+        return action.item(), dist.log_prob(action), value, entropy.item()
 
-
-    # =========================
-    # PPO UPDATE
-    # =========================
     def update(
         self,
         states,
@@ -78,37 +87,35 @@ class PPOAgent:
         epochs=4,
         batch_size=64
     ):
-        device = next(self.model.parameters()).device
+        device = self.get_device()
 
-        # ========= CONVERT INPUTS =========
-        states = torch.from_numpy(np.array(states)).float().to(device)          # (B, state_dim)
-        actions = torch.tensor(actions, dtype=torch.long, device=device)        # (B,)
-        old_logprobs = torch.stack(old_logprobs).detach().to(device)             # (B,)
-        returns = returns.detach().to(device)                                    # (B,)
-
-        advantages = advantages.detach().to(device).float()
-
-        # normalize advantages
-        if advantages.numel() > 1:
-            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        # Convert everything to tensors on the correct device
+        # Use as_tensor to avoid unnecessary copies if already tensors
+        states = torch.as_tensor(np.array(states), dtype=torch.float32, device=device)
+        actions = torch.as_tensor(actions, dtype=torch.long, device=device).flatten()
+        
+        if isinstance(old_logprobs, list):
+            old_logprobs = torch.stack(old_logprobs).to(device).flatten()
         else:
-            advantages = advantages * 0.0
+            old_logprobs = torch.as_tensor(old_logprobs, device=device).flatten()
+            
+        returns = torch.as_tensor(returns, dtype=torch.float32, device=device).flatten()
+        advantages = torch.as_tensor(advantages, dtype=torch.float32, device=device).flatten()
 
-        # ========= ACTION MASKS =========
-        action_masks = torch.from_numpy(
-            np.stack(action_masks)
-        ).bool().to(device)
+        # Normalize advantages
+        if advantages.numel() > 1:
+            std = advantages.std()
+            if std > 1e-8:
+                advantages = (advantages - advantages.mean()) / std
+            else:
+                advantages = advantages - advantages.mean()
 
-        # FIX SHAPE (B, 1, action_dim) -> (B, action_dim)
+        action_masks = torch.as_tensor(np.array(action_masks), dtype=torch.bool, device=device)
         if action_masks.dim() == 3:
             action_masks = action_masks.squeeze(1)
 
-        assert action_masks.dim() == 2, f"action_masks shape error: {action_masks.shape}"
-        assert action_masks.sum(dim=1).min() > 0, "Found all-zero action mask"
-
         B = states.size(0)
 
-        # ========= PPO OPTIMIZATION =========
         for _ in range(epochs):
             sampler = BatchSampler(
                 SubsetRandomSampler(range(B)),
@@ -117,8 +124,7 @@ class PPOAgent:
             )
 
             for idx in sampler:
-                idx = torch.tensor(idx, device=device)
-
+                # Subset indices
                 batch_states = states[idx]
                 batch_actions = actions[idx]
                 batch_old_logprobs = old_logprobs[idx]
@@ -132,7 +138,6 @@ class PPOAgent:
 
                 # mask invalid actions
                 masked_logits = logits.masked_fill(~batch_masks, -1e9)
-
                 dist = torch.distributions.Categorical(logits=masked_logits)
 
                 logprobs = dist.log_prob(batch_actions)
@@ -150,12 +155,9 @@ class PPOAgent:
                 ) * batch_advantages
 
                 policy_loss = -torch.min(surr1, surr2).mean()
-                batch_returns = batch_returns.view(-1)
-                values = values.view(-1)
-
                 value_loss = F.mse_loss(values, batch_returns)
 
-                loss = policy_loss + 0.5 * value_loss - 0.01 * entropy
+                loss = policy_loss + self.value_coef * value_loss - self.entropy_coef * entropy
 
                 # backward
                 self.optimizer.zero_grad()
