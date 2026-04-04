@@ -14,6 +14,9 @@ ACTION_SPACE.append(ActionSpec(MoveType.TWO, 1))
 # SINGLE
 ACTION_SPACE.append(ActionSpec(MoveType.SINGLE, 1))
 
+# TWO (Heo)
+ACTION_SPACE.append(ActionSpec(MoveType.TWO, 1))
+
 # PAIR
 ACTION_SPACE.append(ActionSpec(MoveType.PAIR, 2))
 

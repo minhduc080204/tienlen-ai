@@ -1,41 +1,49 @@
-# core/rule.py
+# core/rules.py
 from collections import Counter
 from typing import List
 from core.card import Card
 from core.move_type import MoveType
 from itertools import combinations
 
+
 def is_valid_single(cards: List[Card]) -> bool:
     return len(cards) == 1
+
 
 def is_valid_pair(cards: List[Card]) -> bool:
     return len(cards) == 2 and cards[0].rank == cards[1].rank
 
+
 def is_valid_triple(cards: List[Card]) -> bool:
     return len(cards) == 3 and len(set(c.rank for c in cards)) == 1
+
 
 def is_valid_straight(cards: List[Card]) -> bool:
     if len(cards) < 3:
         return False
 
-    ranks = sorted(c.rank_value for c in cards)
-    if 12 in ranks:  # không cho sảnh chứa heo
+    ranks = sorted(c.rank for c in cards)
+    if 15 in ranks:  # không cho sảnh chứa heo (2=15)
         return False
 
     return all(ranks[i] + 1 == ranks[i + 1] for i in range(len(ranks) - 1))
 
+
 def is_two(cards: List[Card]) -> bool:
-    return len(cards) == 1 and cards[0].rank_value == 12
+    """Heo (2) = rank 15"""
+    return len(cards) == 1 and cards[0].rank == 15
+
 
 def is_four_of_kind(cards: List[Card]) -> bool:
-    return len(cards) == 4 and len(set(c.rank_value for c in cards)) == 1
+    return len(cards) == 4 and len(set(c.rank for c in cards)) == 1
+
 
 def is_double_straight(cards: List[Card]) -> bool:
     if len(cards) < 6 or len(cards) % 2 != 0:
         return False
 
-    ranks = sorted(c.rank_value for c in cards)
-    if 12 in ranks:
+    ranks = sorted(c.rank for c in cards)
+    if 15 in ranks:  # không có heo
         return False
 
     counter = Counter(ranks)
@@ -44,6 +52,7 @@ def is_double_straight(cards: List[Card]) -> bool:
 
     uniq = sorted(counter.keys())
     return all(uniq[i] + 1 == uniq[i + 1] for i in range(len(uniq) - 1))
+
 
 def detect_move_type(cards: List[Card]):
     if not cards:
@@ -64,10 +73,13 @@ def detect_move_type(cards: List[Card]):
         return MoveType.STRAIGHT
     return None
 
+
 def compare_single(a: Card, b: Card) -> bool:
-    if a.rank_value != b.rank_value:
-        return a.rank_value > b.rank_value
-    return a.suit_value > b.suit_value
+    """True nếu a thắng b (rank cao hơn, hoặc cùng rank thì suit cao hơn)"""
+    if a.rank != b.rank:
+        return a.rank > b.rank
+    return a.suit > b.suit
+
 
 def can_beat(prev_cards: List[Card], new_cards: List[Card]) -> bool:
     prev_type = detect_move_type(prev_cards)
@@ -90,7 +102,7 @@ def can_beat(prev_cards: List[Card], new_cards: List[Card]) -> bool:
 
     # chặt tứ quý
     if prev_type == MoveType.FOUR_OF_KIND:
-        return new_type == MoveType.FOUR_OF_KIND and new_cards[0].rank_value > prev_cards[0].rank_value
+        return new_type == MoveType.FOUR_OF_KIND and new_cards[0].rank > prev_cards[0].rank
 
     # bình thường
     if prev_type != new_type:
@@ -100,33 +112,30 @@ def can_beat(prev_cards: List[Card], new_cards: List[Card]) -> bool:
         return compare_single(new_cards[0], prev_cards[0])
 
     if prev_type in [MoveType.PAIR, MoveType.TRIPLE]:
-        return new_cards[0].rank_value > prev_cards[0].rank_value
+        return new_cards[0].rank > prev_cards[0].rank
 
     if prev_type == MoveType.STRAIGHT:
-        return max(c.rank_value for c in new_cards) > max(c.rank_value for c in prev_cards)
+        return max(c.rank for c in new_cards) > max(c.rank for c in prev_cards)
 
     return False
+
 
 def get_legal_moves(
     hand: List[Card],
     current_trick: List[Card] | None
 ) -> List[List[Card]]:
     """
-    Sinh toàn bộ nước đi hợp lệ từ hand
-    PASS được biểu diễn bằng []
+    Sinh toàn bộ nước đi hợp lệ từ hand.
+    PASS được biểu diễn bằng [].
     """
 
     legal_moves: List[List[Card]] = []
 
-    # -------------------------
     # 1️⃣ PASS (chỉ khi có bài trước)
-    # -------------------------
     if current_trick is not None:
         legal_moves.append([])
 
-    # -------------------------
     # 2️⃣ Sinh mọi tổ hợp bài
-    # -------------------------
     n = len(hand)
 
     for size in range(1, n + 1):
@@ -137,9 +146,7 @@ def get_legal_moves(
             if move_type is None or move_type == MoveType.PASS:
                 continue
 
-            # -------------------------
-            # 3️⃣ Không có bài trước
-            # -------------------------
+            # 3️⃣ Không có bài trước → đánh tự do
             if current_trick is None:
                 legal_moves.append(cards)
             else:

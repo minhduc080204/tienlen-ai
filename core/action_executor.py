@@ -26,7 +26,8 @@ def resolve_action(action_spec, hand, current_trick):
             f"LegalMoves={legal_moves}"
         )
 
+    # ưu tiên đánh combo nhỏ nhất (rank nhỏ nhất)
     return min(
         candidates,
-        key=lambda cards: min(c.rank_value for c in cards)
+        key=lambda cards: min(c.rank for c in cards)
     )

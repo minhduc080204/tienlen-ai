@@ -97,7 +97,19 @@ def train():
             current_pid = env.state.current_player
             if turn_count >= config.MAX_TURNS_PER_EP: break
 
-            current_agent = agents[current_pid]
+            # =====================
+            # AI TURN
+            # =====================
+            if current_pid == AI_PLAYER_ID:
+                player_hand = state.hands[AI_PLAYER_ID]                
+
+                opponent_counts = [
+                    len(hand)
+                    for pid, hand in enumerate(state.hands)
+                    if pid != AI_PLAYER_ID
+                ]
+
+                discard_pile = state.discard_pile   # track bài đã ra
 
             if isinstance(current_agent, PPOAgent):
                 opponent_counts = [len(hand) for pid, hand in enumerate(state.hands) if pid != current_pid]

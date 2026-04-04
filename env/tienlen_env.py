@@ -1,3 +1,5 @@
+# env/tienlen_env.py
+import copy
 from core.deck import Deck
 from core.rules import can_beat
 from core.starting_rules import find_starting_player
@@ -5,7 +7,6 @@ from core.instant_win import is_six_pairs, is_five_double_straight
 from env.game_state import GameState
 from env.step_result import StepResult
 from env.reward import compute_reward
-import copy
 
 
 class TienLenEnv:
@@ -14,7 +15,7 @@ class TienLenEnv:
         self.num_players = num_players
         self.state: GameState | None = None
 
-    def reset(self):
+    def reset(self) -> GameState:
         deck = Deck()
         deck.shuffle()
         hands = deck.deal(self.num_players)
@@ -27,6 +28,7 @@ class TienLenEnv:
                     current_player=i,
                     finished=True,
                     winner=i,
+                    discard_pile=[],
                 )
                 return self.state
 
@@ -39,6 +41,7 @@ class TienLenEnv:
             last_player=None,
             finished=False,
             winner=None,
+            discard_pile=[],
         )
         return self.state
 
@@ -50,7 +53,7 @@ class TienLenEnv:
         player = state.current_player
         hand = state.hands[player]
 
-        # 🔴 COPY STATE TRƯỚC ACTION (CHO REWARD)
+        # COPY STATE TRƯỚC ACTION (CHO REWARD)
         prev_state = copy.deepcopy(state)
 
         # =====================
@@ -58,10 +61,8 @@ class TienLenEnv:
         # =====================
         if not action_cards:
             if state.current_trick is None:
-                # ❌ LỖI NGHIÊM TRỌNG: PASS KHI ĐANG CẦM CÁI
-                # Kết thúc episode ngay lập tức với penalty cực lớn để AI không bao giờ học theo
-                state.finished = True
-                state.winner = (player + 1) % self.num_players # Ai đó khác thắng
+                # không được pass khi không có trick trước
+                reward = -0.1
                 return StepResult(
                     state=state,
                     reward=-100.0, 
@@ -71,6 +72,7 @@ class TienLenEnv:
 
             next_player = (player + 1) % self.num_players
 
+            # Nếu vòng quanh về tới người đánh trick → clear trick
             if next_player == state.last_player:
                 state.current_trick = None
                 state.last_player = None
@@ -100,7 +102,7 @@ class TienLenEnv:
             assert can_beat(state.current_trick, action_cards)
 
         # =====================
-        # REMOVE BÀI (THEO VALUE)
+        # REMOVE BÀI KHỎI TAY
         # =====================
         for c in action_cards:
             for h in hand:
@@ -112,7 +114,10 @@ class TienLenEnv:
                     f"❌ Card {c} not found in player {player}'s hand"
                 )
 
-        # cập nhật trick
+        # Tích lũy vào discard pile
+        state.discard_pile.extend(action_cards)
+
+        # Cập nhật trick
         state.current_trick = action_cards
         state.last_player = player
 
