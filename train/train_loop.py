@@ -98,24 +98,15 @@ def train():
             if turn_count >= config.MAX_TURNS_PER_EP: break
 
             # =====================
-            # AI TURN
+            # AGENT TURN
             # =====================
-            if current_pid == AI_PLAYER_ID:
-                player_hand = state.hands[AI_PLAYER_ID]                
-
-                opponent_counts = [
-                    len(hand)
-                    for pid, hand in enumerate(state.hands)
-                    if pid != AI_PLAYER_ID
-                ]
-
-                discard_pile = state.discard_pile   # track bài đã ra
+            current_agent = agents[current_pid]
 
             if isinstance(current_agent, PPOAgent):
                 opponent_counts = [len(hand) for pid, hand in enumerate(state.hands) if pid != current_pid]
                 state_vec = encode_state(
                     hand=state.hands[current_pid],
-                    discard_pile=[],
+                    discard_pile=state.discard_pile,
                     opponent_counts=opponent_counts,
                     current_trick=state.current_trick,
                     player_id=current_pid,
