@@ -1,121 +1,141 @@
 # inference/ai_service.py
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from pydantic import BaseModel, Field
 import torch
-from core.card import Card
+import time
+import logging
+from typing import List, Optional
 
-# ===== IMPORT PROJECT =====
+from core.card import Card
 from rl.model import TienLenPolicy
 from rl.agent import PPOAgent
 from state.state_dim import STATE_DIM
-
 from inference.predict import predict_action
 from action.action_space import ACTION_SPACE
 
-# ===== INIT APP =====
-app = FastAPI(title="TienLen AI Service")
+# ======================
+# LOGGING
+# ======================
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("TienLenAI")
 
-# ===== DEVICE =====
+# ======================
+# APP INIT
+# ======================
+app = FastAPI(
+    title="TienLen AI Service",
+    description="Refactored API for smarter Tiến Lên model (183 dims)",
+    version="2.0.0"
+)
+
+# ======================
+# SCHEMAS
+# ======================
+class CardInput(BaseModel):
+    rank: int = Field(..., description="Rank 3-15 (2=15)")
+    suit: int = Field(..., description="Suit 1-4 (♠=1, ♣=2, ♦=3, ♥=4)")
+
+class PredictRequest(BaseModel):
+    hand: List[CardInput]
+    opponent_counts: List[int]
+    current_trick: Optional[List[CardInput]] = []
+    player_id: int
+    num_players: int
+    discard_pile: Optional[List[CardInput]] = []
+
+class PredictResponse(BaseModel):
+    action_id: int
+    action_cards: List[dict]
+    value_estimate: float
+    message: str
+    process_time_ms: float
+
+# ======================
+# MODEL LOAD
+# ======================
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print("🚀 AI Service using device:", device)
+logger.info(f"🚀 AI Service using device: {device}")
 
-# ===== LOAD MODEL =====
 model = TienLenPolicy(
     state_dim=STATE_DIM,
     action_dim=len(ACTION_SPACE)
 ).to(device)
 
+# Dummy optimizer for PPOAgent initialization
 optimizer = torch.optim.Adam(model.parameters())
 agent = PPOAgent(model=model, optimizer=optimizer)
 
 CHECKPOINT_PATH = "checkpoints/latest.pt"
 
 try:
+    # Set weights_only=False for custom policy load
     agent.load(CHECKPOINT_PATH)
     model.eval()
-    print(f"✅ Model loaded from {CHECKPOINT_PATH}")
+    logger.info(f"✅ Model loaded from {CHECKPOINT_PATH}")
 except Exception as e:
-    print("⚠️  No checkpoint loaded (fresh model):", e)
+    logger.warning(f"⚠️ No checkpoint loaded (using fresh model): {e}")
 
 
-# ===== HEALTH CHECK =====
-@app.get("/")
+# ======================
+# UTILS
+# ======================
+def _to_card(c: CardInput) -> Card:
+    """Handles both old (0-12) and new (3-15) formats"""
+    if c.rank <= 12 and c.suit <= 3:
+        return Card.from_old_ints(c.rank, c.suit)
+    return Card(rank=c.rank, suit=c.suit)
+
+# ======================
+# ENDPOINTS
+# ======================
+@app.get("/health")
 def health():
-    return {"status": "ok", "state_dim": STATE_DIM, "action_dim": len(ACTION_SPACE)}
-
-
-def _parse_card(c: dict) -> Card:
-    """
-    Parse card từ JSON.
-
-    Format mới: {"rank": 3-15, "suit": 1-4}
-    Format cũ (backward compat): {"rank": 0-12, "suit": 0-3}
-    """
-    rank = c["rank"]
-    suit = c["suit"]
-
-    # Detect format cũ: rank 0-12, suit 0-3
-    if rank <= 12 and suit <= 3:
-        return Card.from_old_ints(rank, suit)
-
-    # Format mới: rank 3-15, suit 1-4
-    return Card(rank=rank, suit=suit)
-
-
-# ===== PREDICT API =====
-@app.post("/predict")
-def predict(data: dict):
-    """
-    Input:
-    {
-        "hand": [{"rank": 3, "suit": 1}, ...],    # rank 3-15, suit 1-4
-        "opponent_counts": [13, 12, 11],
-        "current_trick": [...] | [],
-        "player_id": 0,
-        "num_players": 4,
-        "discard_pile": [...]    # optional, default []
+    return {
+        "status": "ok",
+        "device": str(device),
+        "state_dim": STATE_DIM,
+        "action_dim": len(ACTION_SPACE),
+        "checkpoint": CHECKPOINT_PATH
     }
 
-    Output:
-    {
-        "action_id": int,
-        "action_cards": [{"rank": int, "suit": int, "id": int}],
-        "message": "Pass" | "Play cards"
-    }
-    """
-
+@app.post("/predict", response_model=PredictResponse)
+async def predict(req: PredictRequest):
+    start_time = time.time()
+    
     try:
-        hand_cards          = [_parse_card(c) for c in data.get("hand", [])]
-        current_trick_cards = [_parse_card(c) for c in data.get("current_trick", [])]
-        discard_cards       = [_parse_card(c) for c in data.get("discard_pile", [])]
+        # 1. Parse inputs
+        hand_cards = [_to_card(c) for c in req.hand]
+        trick_cards = [_to_card(c) for c in req.current_trick] if req.current_trick else None
+        discard_cards = [_to_card(c) for c in req.discard_pile] if req.discard_pile else []
 
-        opponent_counts = data["opponent_counts"]
-        player_id       = data["player_id"]
-        num_players     = data["num_players"]
-
-        action_id, cards_to_play = predict_action(
+        # 2. Predict with Agent
+        action_id, cards_to_play, value_est = predict_action(
             agent=agent,
             device=device,
             hand=hand_cards,
-            opponent_counts=opponent_counts,
-            current_trick=current_trick_cards if current_trick_cards else None,
-            player_id=player_id,
-            num_players=num_players,
+            opponent_counts=req.opponent_counts,
+            current_trick=trick_cards,
+            player_id=req.player_id,
+            num_players=req.num_players,
             discard_pile=discard_cards,
         )
 
-        action_cards = [
-            {"rank": card.rank, "suit": card.suit, "id": card.id}
-            for card in cards_to_play
+        # 3. Format output
+        output_cards = [
+            {"rank": c.rank, "suit": c.suit, "id": c.id}
+            for c in cards_to_play
         ]
 
-        return {
-            "action_id": action_id,
-            "action_cards": action_cards,
-            "message": "Pass" if len(action_cards) == 0 else "Play cards"
-        }
-
-    except KeyError as e:
-        raise HTTPException(status_code=400, detail=f"Missing field: {e}")
+        duration = (time.time() - start_time) * 1000
+        
+        return PredictResponse(
+            action_id=action_id,
+            action_cards=output_cards,
+            value_estimate=float(value_est),
+            message="Pass" if not output_cards else f"Play {len(output_cards)} cards",
+            process_time_ms=round(duration, 2)
+        )
 
     except Exception as e:
+        logger.error(f"❌ Prediction error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
