@@ -9,13 +9,13 @@ from core.rules import (
 def build_action_mask_from_legal_moves(legal_moves, action_space):
     mask = np.zeros(len(action_space), dtype=np.float32)
 
-    has_non_pass = any(len(move) > 0 for move in legal_moves)
+    has_pass = any(len(move) == 0 for move in legal_moves)
 
     for i, spec in enumerate(action_space):
 
         # PASS
         if spec.move_type == MoveType.PASS:
-            mask[i] = 1.0 if not has_non_pass else 0.0
+            mask[i] = 1.0 if has_pass else 0.0
             continue
 
         for move in legal_moves:

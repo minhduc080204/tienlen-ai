@@ -12,6 +12,7 @@ python -m venv venv
 
 # Kích hoạt (Windows)
 .\venv\Scripts\activate
+source venv/bin/activate
 
 # Kích hoạt (Linux/macOS)
 source venv/bin/activate

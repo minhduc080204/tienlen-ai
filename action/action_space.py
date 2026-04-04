@@ -8,6 +8,9 @@ ACTION_SPACE = []
 # PASS
 ACTION_SPACE.append(ActionSpec(MoveType.PASS, 0))
 
+# TWO
+ACTION_SPACE.append(ActionSpec(MoveType.TWO, 1))
+
 # SINGLE
 ACTION_SPACE.append(ActionSpec(MoveType.SINGLE, 1))
 

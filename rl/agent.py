@@ -29,7 +29,7 @@ class PPOAgent:
         self.model.load_state_dict(checkpoint['model'])
         self.optimizer.load_state_dict(checkpoint['optimizer'])
 
-    def act(self, state, action_mask):
+    def act(self, state, action_mask, greedy=False):
         if not torch.is_tensor(state):
             state = torch.tensor(state, dtype=torch.float32, device=device)
         else:
@@ -53,9 +53,15 @@ class PPOAgent:
         masked_logits = logits.masked_fill(~action_mask, -1e9)
 
         dist = torch.distributions.Categorical(logits=masked_logits)
-        action = dist.sample()
+        
+        if greedy:
+            action = torch.argmax(masked_logits)
+        else:
+            action = dist.sample()
+            
+        entropy = dist.entropy()
 
-        return action.item(), dist.log_prob(action), value.squeeze(0)
+        return action.item(), dist.log_prob(action), value.squeeze(0), entropy.detach().item()
 
 
     # =========================

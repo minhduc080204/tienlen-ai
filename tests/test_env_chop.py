@@ -17,9 +17,9 @@ def test_four_kind_chop_two():
     )
 
     env.step([Card("2","♠")])
-    state, reward, done, info = env.step([
+    result = env.step([
         Card("6","♠"),Card("6","♣"),Card("6","♦"),Card("6","♥")
     ])
 
-    assert done is True
-    assert state.winner == 0
+    assert result.done is True
+    assert result.state.winner == 0

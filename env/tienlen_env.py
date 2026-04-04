@@ -65,9 +65,9 @@ class TienLenEnv:
                 reward = -0.1
                 return StepResult(
                     state=state,
-                    reward=reward,
-                    done=False,
-                    info={"action": "INVALID_PASS"}
+                    reward=-100.0, 
+                    done=True,
+                    info={"action": "INVALID_PASS_TERMINATED"}
                 )
 
             next_player = (player + 1) % self.num_players

@@ -1,128 +1,101 @@
-# train/train_loop.py
 import torch
-
+import os
+import argparse
+import train.config as config
 from env.tienlen_env import TienLenEnv
 from state.state_encoder import encode_state
 from action.action_mask import build_action_mask_from_legal_moves
 from action.action_space import ACTION_SPACE
-
 from rl.agent import PPOAgent
 from rl.model import TienLenPolicy
 from rl.buffer import RolloutBuffer
-from env.reward import compute_reward
-
 from core.action_executor import resolve_action
-from env.step_result import StepResult
-
 from bots.rule_bot import RuleBot
 from state.state_dim import STATE_DIM
-import argparse
-import train.config as config
 from utils.logger import setup_logger
 from utils.turn_logger import log_turn
-import os
-from core.move_type import MoveType
-from core.rules import (
-    get_legal_moves,
-)
+from core.rules import get_legal_moves
+from utils.metrics import MetricTracker
+import numpy as np
 
 def parse_args():
     parser = argparse.ArgumentParser("PPO Train Tiến Lên")
-
     parser.add_argument("--episodes", type=int, default=config.MAX_EPISODES)
     parser.add_argument("--batch-size", type=int, default=config.BATCH_SIZE)
     parser.add_argument("--lr", type=float, default=config.LR)
-
     parser.add_argument("--gamma", type=float, default=config.GAMMA)
     parser.add_argument("--lam", type=float, default=config.LAMBDA)
-
     parser.add_argument("--ppo-epochs", type=int, default=config.PPO_EPOCHS)
-
     parser.add_argument("--save-every", type=int, default=config.SAVE_EVERY)
-    parser.add_argument("--eval-every", type=int, default=config.EVAL_EVERY)
-
-    parser.add_argument("--device", type=str, default="auto",
-                        choices=["auto", "cpu", "cuda"])
-
+    parser.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"])
     return parser.parse_args()
 
-
 def train():
-    logger = setup_logger(
-        name="ppo_train",
-        log_dir="logs"
-    )
-
+    logger = setup_logger(name="ppo_train", log_dir="logs")
     args = parse_args()
-    MAX_EPISODES = args.episodes
-    BATCH_SIZE = args.batch_size
-    LR = args.lr
-    GAMMA = args.gamma
-    LAMBDA = args.lam
-    PPO_EPOCHS = args.ppo_epochs
-    SAVE_EVERY=args.save_every
+    tracker = MetricTracker(log_dir="logs")
 
-    NUM_PLAYERS=config.NUM_PLAYERS
-    MAX_TURNS_PER_EP=config.MAX_TURNS_PER_EP
-    AI_PLAYER_ID=config.AI_PLAYER_ID
+    if args.device == "auto":
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    else:
+        device = torch.device(args.device)
+    print(f"🚀 Using device: {device}")
 
-    LOG_TURN = config.LOG_TURN
-    LOG_TURN_EPISODE = config.LOG_TURN_EPISODE
-    
-    print("🚀 Start PPO Training")
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    checkpoint_dir = os.path.join(base_dir, "..", "checkpoints")
+    os.makedirs(checkpoint_dir, exist_ok=True)
 
-    # =========================
-    # 1️⃣ INIT
-    # =========================
-    env = TienLenEnv(num_players=NUM_PLAYERS)
+    latest_ckpt = os.path.join(checkpoint_dir, "latest.pt")
+    has_checkpoint = os.path.exists(latest_ckpt)
 
-    model = TienLenPolicy(
-        state_dim=STATE_DIM,
-        action_dim=len(ACTION_SPACE)
-    )
+    env = TienLenEnv(num_players=config.NUM_PLAYERS)
+    agents = []
+    buffers = []
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=LR)
+    model_0 = TienLenPolicy(state_dim=STATE_DIM, action_dim=len(ACTION_SPACE)).to(device)
+    opt_0 = torch.optim.Adam(model_0.parameters(), lr=args.lr)
+    agent_0 = PPOAgent(model=model_0, optimizer=opt_0, gamma=args.gamma, clip_eps=0.2)
 
-    agent = PPOAgent(
-        model=model,
-        optimizer=optimizer,
-        gamma=GAMMA,
-        clip_eps=0.2
-    )
+    if has_checkpoint:
+        print(f"🔄 Loading checkpoint for Agent 0: {latest_ckpt}")
+        agent_0.load(latest_ckpt)
 
-    latest_ckpt = "checkpoints/latest.pt"
+    agents.append(agent_0)
+    buffers.append(RolloutBuffer())
 
-    if os.path.exists(latest_ckpt):
-        print("🔄 Loading checkpoint...")
-        agent.load(latest_ckpt)
+    for i in range(1, config.NUM_PLAYERS):
+        if has_checkpoint:
+            m = TienLenPolicy(state_dim=STATE_DIM, action_dim=len(ACTION_SPACE)).to(device)
+            o = torch.optim.Adam(m.parameters(), lr=args.lr)
+            a = PPOAgent(model=m, optimizer=o, gamma=args.gamma, clip_eps=0.2)
+            a.load(latest_ckpt)
+            agents.append(a)
+            print(f"🤖 Player {i}: AI loaded from checkpoint.")
+        else:
+            agents.append(RuleBot(player_id=i))
+            print(f"🤖 Player {i}: No checkpoint, using RuleBot.")
 
-    rule_bot = RuleBot(player_id=1)
-    buffer = RolloutBuffer()
+        buffers.append(RolloutBuffer())
 
-    # =========================
-    # 2️⃣ TRAIN LOOP
-    # =========================
-    for episode in range(1, MAX_EPISODES + 1):
+    print(f"🚀 Start Training. Mode: {'Self-Play' if has_checkpoint else 'AI vs RuleBots'}")
 
+    for episode in range(1, args.episodes + 1):
         state = env.reset()
-
-        # instant win → skip
         if state.finished:
+            winner = state.winner
+            reward_0 = 30.0 if winner == 0 else -30.0
+            tracker.record_episode(episode, winner, reward_0, 0)
             continue
 
-        buffer.clear()
+        for b in buffers: b.clear()
         done = False
         turn_count = 0
+        ep_reward_0 = 0
 
-        # =========================
-        # 3️⃣ PLAY ONE GAME
-        # =========================
         while not done:
             turn_count += 1
             current_pid = env.state.current_player
-            if turn_count >= MAX_TURNS_PER_EP:
-                print(f"⚠️ Episode {episode} force stop (turn limit)")
-                break
+            if turn_count >= config.MAX_TURNS_PER_EP: break
 
             # =====================
             # AI TURN
@@ -138,159 +111,93 @@ def train():
 
                 discard_pile = state.discard_pile   # track bài đã ra
 
+            if isinstance(current_agent, PPOAgent):
+                opponent_counts = [len(hand) for pid, hand in enumerate(state.hands) if pid != current_pid]
                 state_vec = encode_state(
-                    hand=player_hand,
-                    discard_pile=discard_pile,
+                    hand=state.hands[current_pid],
+                    discard_pile=[],
                     opponent_counts=opponent_counts,
                     current_trick=state.current_trick,
-                    player_id=AI_PLAYER_ID,
-                    num_players=NUM_PLAYERS
+                    player_id=current_pid,
+                    num_players=config.NUM_PLAYERS
                 )
 
-                state_tensor = torch.from_numpy(state_vec).float().unsqueeze(0)
-                # state_tensor = torch.tensor(
-                #     state_vec,
-                #     dtype=torch.float32
-                # ).unsqueeze(0)   # (1, STATE_DIM)
+                state_tensor = torch.from_numpy(state_vec).float().to(device).unsqueeze(0)
+                legal_moves = get_legal_moves(hand=state.hands[current_pid], current_trick=state.current_trick)
+                action_mask = build_action_mask_from_legal_moves(legal_moves=legal_moves, action_space=ACTION_SPACE)
+                action_mask_tensor = torch.from_numpy(action_mask).to(device).unsqueeze(0)
 
-                # action_mask = build_action_mask(
-                #     hand=env.state.hands[AI_PLAYER_ID],
-                #     current_trick=env.state.current_trick
-                # )
-
-                legal_moves = get_legal_moves(
-                    hand=env.state.hands[AI_PLAYER_ID],
-                    current_trick=env.state.current_trick
-                )
-
-                action_mask = build_action_mask_from_legal_moves(
-                    legal_moves=legal_moves,
-                    action_space=ACTION_SPACE
-                )
-
-                action_mask = torch.from_numpy(action_mask).unsqueeze(0)
-                # action_mask = torch.tensor(
-                #     action_mask,
-                #     dtype=torch.float32
-                # ).unsqueeze(0)   # (1, action_dim)
-
-
-                action_id, logprob, value = agent.act(
-                    state_tensor,
-                    action_mask
-                )
-
+                action_id, logprob, value, entropy = current_agent.act(state_tensor, action_mask_tensor)
                 action_spec = ACTION_SPACE[action_id]
+                action_cards = resolve_action(action_spec=action_spec, hand=state.hands[current_pid], current_trick=state.current_trick)
 
-                action_cards = resolve_action(
-                    action_spec=action_spec,
-                    hand=env.state.hands[AI_PLAYER_ID],
-                    current_trick=env.state.current_trick
-                )
-                # action_cards = build_cards_from_spec(
-                #     spec=action_spec,
-                #     hand=env.state.hands[AI_PLAYER_ID],
-                #     current_trick=env.state.current_trick
-                # )
-                if LOG_TURN and episode == LOG_TURN_EPISODE:
-                    log_turn(
-                        episode=episode,
-                        turn=turn_count,
-                        env=env,
-                        action_spec=action_spec,
-                        action_cards=action_cards
-                    )
+                if current_pid == 0:
+                    tracker.record_move(action_spec.move_type)
+                    tracker.record_entropy(entropy)
 
-
-            # =====================
-            # OPPONENT TURN
-            # =====================
-            else:
-                action_cards = rule_bot.select_action(
-                    state,
-                    current_pid
-                )
-                if LOG_TURN and episode == LOG_TURN_EPISODE:
-                    log_turn(
-                        episode=episode,
-                        turn=turn_count,
-                        env=env,
-                        action_spec=None,
-                        action_cards=action_cards
-                    )
-
-            step_result = env.step(action_cards)
-
-            reward = step_result.reward
-
-            # =====================
-            # STORE ROLLOUT (AI ONLY)
-            # =====================
-            if current_pid == AI_PLAYER_ID:
-                buffer.add(
+                buffers[current_pid].add(
                     state=state_vec,
                     action=action_id,
                     logprob=logprob.detach(),
-                    reward=reward,
-                    done=step_result.done,
+                    reward=0,
+                    done=False,
                     value=value.detach(),
-                    action_mask=action_mask
+                    action_mask=action_mask_tensor
                 )
+
+                step_result = env.step(action_cards)
+                buffers[current_pid].rewards[-1] = step_result.reward
+
+                if current_pid == 0:
+                    ep_reward_0 += step_result.reward
+            else:
+                action_cards = current_agent.select_action(state, current_pid)
+                step_result = env.step(action_cards)
 
             state = step_result.state
             done = step_result.done
 
-        # =========================
-        # 4️⃣ PPO UPDATE
-        # =========================
-        if len(buffer) > 0:
-            advantages, returns = buffer.compute_gae(
-                gamma=GAMMA,
-                lam=LAMBDA
-            )
+        # Terminal Reward
+        winner = state.winner
+        for i in range(config.NUM_PLAYERS):
+            if isinstance(agents[i], PPOAgent) and len(buffers[i]) > 0:
+                if i == winner:
+                    buffers[i].rewards[-1] += 30.0
+                    buffers[i].dones[-1] = True
+                    if i == 0: ep_reward_0 += 30.0
+                else:
+                    buffers[i].rewards[-1] += -30.0
+                    buffers[i].dones[-1] = True
+                    if i == 0: ep_reward_0 += -30.0
 
-            agent.update(
-                states=buffer.states,
-                actions=buffer.actions,
-                old_logprobs=buffer.logprobs,
-                returns=returns,
-                advantages=advantages,
-                action_masks=buffer.action_masks,
-                epochs=PPO_EPOCHS,
-                batch_size=BATCH_SIZE
-            )
+        tracker.record_episode(episode, state.winner, ep_reward_0, turn_count)
 
-            buffer.clear()
+        for i in range(config.NUM_PLAYERS):
+            if isinstance(agents[i], PPOAgent) and len(buffers[i]) > 0:
+                adv, ret = buffers[i].compute_gae(gamma=args.gamma, lam=args.lam)
+                agents[i].update(
+                    states=buffers[i].states,
+                    actions=buffers[i].actions,
+                    old_logprobs=buffers[i].logprobs,
+                    returns=ret,
+                    advantages=adv,
+                    action_masks=buffers[i].action_masks,
+                    epochs=args.ppo_epochs,
+                    batch_size=args.batch_size
+                )
 
+        if episode % 10 == 0:
+            summary = tracker.get_summary(last_n=10)
+            print(f"🔹 Ep {episode} | Winner: P{state.winner} | WR: {summary['win_rate']:.2f} | Rew: {summary['avg_reward']:.1f} | Entropy: {summary['avg_entropy']:.3f}")
+            tracker.save_to_csv(episode, summary['win_rate'], summary['avg_reward'], summary['avg_turns'], summary['avg_entropy'], summary['move_stats'])
 
-        # =========================
-        # 5️⃣ LOG
-        # =========================
-        if episode % 1 == 0:
-            win = state.winner == AI_PLAYER_ID
-            print(
-                f"[Episode {episode}] "
-                f"Turns={turn_count} "
-                f"Win={win}"
-            )
-            logger.info(
-                f"Episode={episode} "
-                f"Turns={turn_count} "
-                f"Win={win} "
-                f"TotalReward={reward:.3f}"
-            )
+        if episode % args.save_every == 0:
+            save_path_ep = os.path.join(checkpoint_dir, f"ppo_ep{episode}.pt")
+            agents[0].save(save_path_ep)
+            agents[0].save(latest_ckpt)
+            print(f"💾 Checkpoint saved: {save_path_ep}")
 
-
-        # =========================
-        # 6️⃣ SAVE CHECKPOINT
-        # =========================
-        if episode % SAVE_EVERY == 0:
-            path = f"checkpoints/ppo_ep{episode}.pt"
-            agent.save(path)
-            print(f"💾 Saved checkpoint: {path}")
-
-    print("✅ Training finished")
-
+    print("✅ Training Complete.")
 
 if __name__ == "__main__":
     train()

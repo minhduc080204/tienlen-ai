@@ -9,9 +9,9 @@ def test_valid_pass_after_trick():
     card = state.hands[p0][0]
 
     # player 0 đánh
-    state, reward, done, info = env.step([card])
-    assert done is False
+    result = env.step([card])
+    assert result.done is False
 
     # player 1 PASS (hợp lệ vì đã có trick)
-    state, reward, done, info = env.step([])
-    assert done is False
+    result = env.step([])
+    assert result.done is False
