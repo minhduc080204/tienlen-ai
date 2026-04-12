@@ -25,6 +25,12 @@ def parse_args():
     parser = argparse.ArgumentParser("PPO Multi-Phase Training for Tien Len")
     parser.add_argument("--episodes", type=int, default=3000)
     parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument(
+        "--init-model-path",
+        type=str,
+        default=None,
+        help="Optional path to a pretrained/checkpoint model for initialization (e.g. Kaggle input path).",
+    )
     return parser.parse_args()
 
 def setup_agents(device, lr, has_checkpoint=False, checkpoint_path=None):
@@ -52,7 +58,18 @@ def train():
     best_path = os.path.join(ckpt_dir, "best_model.pt")
     
     # 1. Khởi tạo Agent chính
-    main_agent = setup_agents(device, config.LR, os.path.exists(latest_path), latest_path)
+    init_model_path = None
+    if args.init_model_path:
+        init_model_path = os.path.abspath(os.path.expanduser(args.init_model_path))
+        if not os.path.isfile(init_model_path):
+            raise FileNotFoundError(f"Model file not found: {init_model_path}")
+
+    main_agent = setup_agents(
+        device=device,
+        lr=config.LR,
+        has_checkpoint=bool(init_model_path),
+        checkpoint_path=init_model_path,
+    )
     
     # 2. Tracking win rate
     win_history = deque(maxlen=config.WINDOW_SIZE)
