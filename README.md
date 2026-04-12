@@ -20,7 +20,7 @@ source venv/bin/activate
 # Cài thư viện
 pip install -r requirements.txt
 ```
-
+uvicorn inference.ai_service:app --host 0.0.0.0 --port 8000
 ---
 
 ## 🏗️ Kiến trúc State (235 dims)
