@@ -1,194 +1,240 @@
 import torch
 import os
 import argparse
+import numpy as np
+from collections import deque
+from typing import List
+
 import train.config as config
 from env.tienlen_env import TienLenEnv
 from state.state_encoder import encode_state
+from state.state_dim import STATE_DIM
 from action.action_mask import build_action_mask_from_legal_moves
 from action.action_space import ACTION_SPACE
+from core.action_executor import resolve_action
+from core.rules import get_legal_moves, detect_move_type
+
 from rl.agent import PPOAgent
 from rl.model import TienLenPolicy
 from rl.buffer import RolloutBuffer
-from core.action_executor import resolve_action
 from bots.rule_bot import RuleBot
-from state.state_dim import STATE_DIM
 from utils.logger import setup_logger
-from utils.turn_logger import log_turn
-from core.rules import get_legal_moves
 from utils.metrics import MetricTracker
-import numpy as np
 
 def parse_args():
-    parser = argparse.ArgumentParser("PPO Train Tiến Lên")
-    parser.add_argument("--episodes", type=int, default=config.MAX_EPISODES)
-    parser.add_argument("--batch-size", type=int, default=config.BATCH_SIZE)
-    parser.add_argument("--lr", type=float, default=config.LR)
-    parser.add_argument("--gamma", type=float, default=config.GAMMA)
-    parser.add_argument("--lam", type=float, default=config.LAMBDA)
-    parser.add_argument("--ppo-epochs", type=int, default=config.PPO_EPOCHS)
-    parser.add_argument("--save-every", type=int, default=config.SAVE_EVERY)
-    parser.add_argument("--device", type=str, default="auto", choices=["auto", "cpu", "cuda"])
+    parser = argparse.ArgumentParser("PPO Multi-Phase Training for Tien Len")
+    parser.add_argument("--episodes", type=int, default=3000)
+    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
+    parser.add_argument(
+        "--init-model-path",
+        type=str,
+        default=None,
+        help="Optional path to a pretrained/checkpoint model for initialization (e.g. Kaggle input path).",
+    )
     return parser.parse_args()
 
+def setup_agents(device, lr, has_checkpoint=False, checkpoint_path=None):
+    """Khởi tạo model và agent chính."""
+    model = TienLenPolicy(state_dim=STATE_DIM, action_dim=len(ACTION_SPACE)).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+    main_agent = PPOAgent(model=model, optimizer=optimizer, gamma=config.GAMMA, clip_eps=0.2)
+    
+    if has_checkpoint and checkpoint_path:
+        main_agent.load(checkpoint_path)
+        print(f"🔄 Loaded checkpoint: {checkpoint_path}")
+    
+    return main_agent
+
 def train():
-    logger = setup_logger(name="ppo_train", log_dir="logs")
     args = parse_args()
+    device = torch.device(args.device)
+    logger = setup_logger(name="ppo_multi_phase", log_dir="logs")
     tracker = MetricTracker(log_dir="logs")
+    
+    # Checkpoints path
+    ckpt_dir = "checkpoints"
+    os.makedirs(ckpt_dir, exist_ok=True)
+    latest_path = os.path.join(ckpt_dir, "latest.pt")
+    best_path = os.path.join(ckpt_dir, "best_model.pt")
+    
+    # 1. Khởi tạo Agent chính
+    init_model_path = None
+    if args.init_model_path:
+        init_model_path = os.path.abspath(os.path.expanduser(args.init_model_path))
+        if not os.path.isfile(init_model_path):
+            raise FileNotFoundError(f"Model file not found: {init_model_path}")
 
-    if args.device == "auto":
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    else:
-        device = torch.device(args.device)
-    print(f"🚀 Using device: {device}")
-
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    checkpoint_dir = os.path.join(base_dir, "..", "checkpoints")
-    os.makedirs(checkpoint_dir, exist_ok=True)
-
-    latest_ckpt = os.path.join(checkpoint_dir, "latest.pt")
-    has_checkpoint = os.path.exists(latest_ckpt)
-
+    main_agent = setup_agents(
+        device=device,
+        lr=config.LR,
+        has_checkpoint=bool(init_model_path),
+        checkpoint_path=init_model_path,
+    )
+    
+    # 2. Tracking win rate
+    win_history = deque(maxlen=config.WINDOW_SIZE)
+    best_win_rate = 0.0
+    
     env = TienLenEnv(num_players=config.NUM_PLAYERS)
-    agents = []
-    buffers = []
+    
+    # Buffer tích lũy để update model
+    cumulative_buffer = RolloutBuffer()
 
-    model_0 = TienLenPolicy(state_dim=STATE_DIM, action_dim=len(ACTION_SPACE)).to(device)
-    opt_0 = torch.optim.Adam(model_0.parameters(), lr=args.lr)
-    agent_0 = PPOAgent(model=model_0, optimizer=opt_0, gamma=args.gamma, clip_eps=0.2)
-
-    if has_checkpoint:
-        print(f"🔄 Loading checkpoint for Agent 0: {latest_ckpt}")
-        agent_0.load(latest_ckpt)
-
-    agents.append(agent_0)
-    buffers.append(RolloutBuffer())
-
-    for i in range(1, config.NUM_PLAYERS):
-        if has_checkpoint:
-            m = TienLenPolicy(state_dim=STATE_DIM, action_dim=len(ACTION_SPACE)).to(device)
-            o = torch.optim.Adam(m.parameters(), lr=args.lr)
-            a = PPOAgent(model=m, optimizer=o, gamma=args.gamma, clip_eps=0.2)
-            a.load(latest_ckpt)
-            agents.append(a)
-            print(f"🤖 Player {i}: AI loaded from checkpoint.")
-        else:
-            agents.append(RuleBot(player_id=i))
-            print(f"🤖 Player {i}: No checkpoint, using RuleBot.")
-
-        buffers.append(RolloutBuffer())
-
-    print(f"🚀 Start Training. Mode: {'Self-Play' if has_checkpoint else 'AI vs RuleBots'}")
+    print(f"🚀 Starting Multi-Phase Training on {device}")
 
     for episode in range(1, args.episodes + 1):
-        state = env.reset()
-        if state.finished:
-            winner = state.winner
-            reward_0 = 30.0 if winner == 0 else -30.0
-            tracker.record_episode(episode, winner, reward_0, 0)
-            continue
+        # Xác định Giai đoạn (Phase)
+        if episode <= config.WARMUP_EPISODES:
+            phase = 1 # Warm-up: vs RuleBot
+        elif episode <= config.SELF_PLAY_EPISODES:
+            phase = 2 # Self-Play: vs Frozen Version
+        else:
+            phase = 3 # Shared Model: 4-way PPO update
 
-        for b in buffers: b.clear()
-        done = False
+        # Thiết lập danh sách người chơi cho episode này
+        episode_agents = [None] * config.NUM_PLAYERS
+        episode_buffers = [RolloutBuffer() for _ in range(config.NUM_PLAYERS)]
+        
+        # P0 luôn là Main Agent
+        episode_agents[0] = main_agent
+        
+        for i in range(1, config.NUM_PLAYERS):
+            if phase == 1:
+                episode_agents[i] = RuleBot(player_id=i)
+            else:
+                # Giai đoạn 2 và 3 đều dùng PPO Agent (Shared Weights)
+                episode_agents[i] = main_agent
+
+        # Reset Game
+        state = env.reset()
+        done = state.finished
         turn_count = 0
         ep_reward_0 = 0
 
-        while not done:
+        # --- GAME LOOP ---
+        while not done and turn_count < config.MAX_TURNS_PER_GAME:
             turn_count += 1
-            current_pid = env.state.current_player
-            if turn_count >= config.MAX_TURNS_PER_EP: break
-
-            # =====================
-            # AGENT TURN
-            # =====================
-            current_agent = agents[current_pid]
-
-            if isinstance(current_agent, PPOAgent):
-                opponent_counts = [len(hand) for pid, hand in enumerate(state.hands) if pid != current_pid]
+            curr_pid = env.state.current_player
+            agent = episode_agents[curr_pid]
+            
+            if isinstance(agent, PPOAgent):
+                # 1. Encoding State
+                opp_counts = [len(h) for p, h in enumerate(state.hands) if p != curr_pid]
                 state_vec = encode_state(
-                    hand=state.hands[current_pid],
+                    hand=state.hands[curr_pid],
                     discard_pile=state.discard_pile,
-                    opponent_counts=opponent_counts,
+                    opponent_counts=opp_counts,
                     current_trick=state.current_trick,
-                    player_id=current_pid,
-                    num_players=config.NUM_PLAYERS
+                    player_id=curr_pid,
+                    num_players=config.NUM_PLAYERS,
+                    passed_players=state.passed_players
                 )
-
-                state_tensor = torch.from_numpy(state_vec).float().to(device).unsqueeze(0)
-                legal_moves = get_legal_moves(hand=state.hands[current_pid], current_trick=state.current_trick)
-                action_mask = build_action_mask_from_legal_moves(legal_moves=legal_moves, action_space=ACTION_SPACE)
-                action_mask_tensor = torch.from_numpy(action_mask).to(device).unsqueeze(0)
-
-                action_id, logprob, value, entropy = current_agent.act(state_tensor, action_mask_tensor)
-                action_spec = ACTION_SPACE[action_id]
-                action_cards = resolve_action(action_spec=action_spec, hand=state.hands[current_pid], current_trick=state.current_trick)
-
-                if current_pid == 0:
-                    tracker.record_move(action_spec.move_type)
+                
+                # 2. Action Masking
+                legal_moves = get_legal_moves(state.hands[curr_pid], state.current_trick)
+                mask = build_action_mask_from_legal_moves(legal_moves, ACTION_SPACE)
+                
+                # 3. Inference
+                state_t = torch.as_tensor(state_vec, device=device, dtype=torch.float32).unsqueeze(0)
+                mask_t = torch.as_tensor(mask, device=device, dtype=torch.bool).unsqueeze(0)
+                
+                with torch.no_grad():
+                    action_id, logprob, val, entropy = agent.act(state_t, mask_t)
+                
+                # 4. Resolve Action & Step
+                action_cards = resolve_action(ACTION_SPACE[action_id], state.hands[curr_pid], state.current_trick)
+                
+                # Record move stats for player 0
+                if curr_pid == 0:
+                    move_type = detect_move_type(action_cards)
+                    if move_type:
+                        tracker.record_move(move_type)
                     tracker.record_entropy(entropy)
 
-                buffers[current_pid].add(
-                    state=state_vec,
-                    action=action_id,
-                    logprob=logprob.detach(),
-                    reward=0,
-                    done=False,
-                    value=value.detach(),
-                    action_mask=action_mask_tensor
-                )
-
-                step_result = env.step(action_cards)
-                buffers[current_pid].rewards[-1] = step_result.reward
-
-                if current_pid == 0:
-                    ep_reward_0 += step_result.reward
+                step_res = env.step(action_cards)
+                
+                # 5. Store Experience
+                if curr_pid == 0 or phase == 3:
+                    episode_buffers[curr_pid].add(
+                        state=state_vec,
+                        action=action_id,
+                        logprob=logprob,
+                        reward=step_res.reward,
+                        done=step_res.done,
+                        value=val,
+                        action_mask=mask
+                    )
+                
+                if curr_pid == 0: ep_reward_0 += step_res.reward
+                state = step_res.state
+                done = step_res.done
             else:
-                action_cards = current_agent.select_action(state, current_pid)
-                step_result = env.step(action_cards)
+                # RuleBot Turn
+                action_cards = agent.select_action(state, curr_pid)
+                step_res = env.step(action_cards)
+                state = step_res.state
+                done = step_res.done
 
-            state = step_result.state
-            done = step_result.done
-
-        # Terminal Reward
+        # --- END OF EPISODE ---
         winner = state.winner
+        win_history.append(1 if winner == 0 else 0)
+        
+        # Record episode metrics
+        tracker.record_episode(episode, winner, ep_reward_0, turn_count)
+
+        # Terminal Reward & GAE
         for i in range(config.NUM_PLAYERS):
-            if isinstance(agents[i], PPOAgent) and len(buffers[i]) > 0:
-                if i == winner:
-                    buffers[i].rewards[-1] += 30.0
-                    buffers[i].dones[-1] = True
-                    if i == 0: ep_reward_0 += 30.0
-                else:
-                    buffers[i].rewards[-1] += -30.0
-                    buffers[i].dones[-1] = True
-                    if i == 0: ep_reward_0 += -30.0
+            if len(episode_buffers[i]) > 0:
+                final_reward = 30.0 if i == winner else -30.0
+                episode_buffers[i].rewards[-1] += final_reward
+                adv, ret = episode_buffers[i].compute_gae(config.GAMMA, config.LAMBDA)
+                cumulative_buffer.extend(episode_buffers[i], adv, ret)
 
-        tracker.record_episode(episode, state.winner, ep_reward_0, turn_count)
+        # --- MODEL UPDATE ---
+        last_losses = {"policy_loss": 0, "value_loss": 0, "entropy_loss": 0}
+        if len(cumulative_buffer) >= config.BATCH_SIZE:
+            # Gửi thẳng List/Numpy vào, Agent sẽ tự chuyển sang Tensor an toàn
+            last_losses = main_agent.update(
+                states=cumulative_buffer.states,
+                actions=cumulative_buffer.actions,
+                old_logprobs=cumulative_buffer.logprobs,
+                returns=cumulative_buffer.returns,
+                advantages=cumulative_buffer.advantages,
+                action_masks=cumulative_buffer.action_masks,
+                epochs=config.PPO_EPOCHS,
+                batch_size=config.BATCH_SIZE
+            )
+            cumulative_buffer.clear()
+            if device.type == "cuda": torch.cuda.empty_cache()
 
-        for i in range(config.NUM_PLAYERS):
-            if isinstance(agents[i], PPOAgent) and len(buffers[i]) > 0:
-                adv, ret = buffers[i].compute_gae(gamma=args.gamma, lam=args.lam)
-                agents[i].update(
-                    states=buffers[i].states,
-                    actions=buffers[i].actions,
-                    old_logprobs=buffers[i].logprobs,
-                    returns=ret,
-                    advantages=adv,
-                    action_masks=buffers[i].action_masks,
-                    epochs=args.ppo_epochs,
-                    batch_size=args.batch_size
-                )
+        # --- LOGGING ---
+        if episode % 20 == 0:
+            summary = tracker.get_summary(last_n=20)
+            avg_win_rate = summary["win_rate"]
+            
+            print(f"Ep {episode} [{phase}] | WR: {avg_win_rate:.2f} | Best WR: {best_win_rate:.2f} | Rew: {summary['avg_reward']:.1f}")
+            
+            # Save CSV
+            tracker.save_to_csv(
+                episode=episode,
+                phase=phase,
+                win_rate=avg_win_rate,
+                best_win_rate=best_win_rate,
+                avg_reward=summary["avg_reward"],
+                avg_turns=summary["avg_turns"],
+                avg_entropy=summary["avg_entropy"],
+                losses=last_losses,
+                move_stats=summary["move_stats"]
+            )
 
-        if episode % 10 == 0:
-            summary = tracker.get_summary(last_n=10)
-            print(f"🔹 Ep {episode} | Winner: P{state.winner} | WR: {summary['win_rate']:.2f} | Rew: {summary['avg_reward']:.1f} | Entropy: {summary['avg_entropy']:.3f}")
-            tracker.save_to_csv(episode, summary['win_rate'], summary['avg_reward'], summary['avg_turns'], summary['avg_entropy'], summary['move_stats'])
+            main_agent.save(latest_path)
+            if avg_win_rate > best_win_rate and episode > config.WINDOW_SIZE:
+                best_win_rate = avg_win_rate
+                if best_win_rate >= config.WIN_RATE_THRESHOLD:
+                    main_agent.save(best_path)
+                    print(f"⭐ New Best Model: {best_win_rate:.2f}")
 
-        if episode % args.save_every == 0:
-            save_path_ep = os.path.join(checkpoint_dir, f"ppo_ep{episode}.pt")
-            agents[0].save(save_path_ep)
-            agents[0].save(latest_ckpt)
-            print(f"💾 Checkpoint saved: {save_path_ep}")
-
-    print("✅ Training Complete.")
+    print("✅ Training Finished.")
 
 if __name__ == "__main__":
     train()

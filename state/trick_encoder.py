@@ -4,8 +4,15 @@ from core.card import Card
 from core.rules import detect_move_type
 from core.move_type import MoveType
 
-# 7 type bits + 1 no-trick + rank/suit info + extras = 18 dims
-TRICK_VECTOR_SIZE = 18
+# 52 binary + 18 feature bits = 70 dims
+TRICK_VECTOR_SIZE = 70
+
+
+def _card_to_index(card: Card) -> int:
+    """rank 3..14 -> 0..47, rank 15 -> 48..51"""
+    if card.rank == 15:
+        return 48 + (card.suit - 1)
+    return (card.rank - 3) * 4 + (card.suit - 1)
 
 
 def encode_trick(cards: list[Card] | None) -> np.ndarray:
@@ -13,27 +20,35 @@ def encode_trick(cards: list[Card] | None) -> np.ndarray:
     Encode current trick on the table.
 
     Layout:
-    [0]     no trick (free to play anything)
-    [1-6]   one-hot move type: SINGLE, PAIR, TRIPLE, STRAIGHT, FOUR_OF_KIND, DOUBLE_STRAIGHT
-    [7]     main rank / 15.0
-    [8-11]  one-hot highest suit (1..4 → idx 0..3)
-    [12]    trick length / 13.0
-    [13]    is_two (heo) flag
-    [14]    is beateable by higher same-type (rank < 15) — not a two
-    [15]    relative strength (rank / 15.0 duplicated for emphasis)
-    [16]    is special (FOUR_OF_KIND or DOUBLE_STRAIGHT)
-    [17]    padding
+    [0-51]  binary: which cards are currently on table
+    [52]    no trick (free to play anything)
+    [53-58] one-hot move type: SINGLE, PAIR, TRIPLE, STRAIGHT, FOUR_OF_KIND, DOUBLE_STRAIGHT
+    [59]    main rank / 15.0
+    [60-63] one-hot highest suit (1..4 -> idx 0..3)
+    [64]    trick length / 13.0
+    [65]    is_two (heo) flag
+    [66]    is beateable by higher same-type (rank < 15)
+    [67]    relative strength (rank / 15.0)
+    [68]    is special (FOUR_OF_KIND or DOUBLE_STRAIGHT)
+    [69]    reserved
     """
 
     vec = np.zeros(TRICK_VECTOR_SIZE, dtype=np.float32)
 
-    # no trick
+    # 1. Binary bits (0-51)
+    if cards:
+        for card in cards:
+            vec[_card_to_index(card)] = 1.0
+
+    offset = 52
+
+    # 2. No trick flag
     if not cards:
-        vec[0] = 1.0
+        vec[offset] = 1.0
         return vec
 
+    # 3. Move Type Features
     move_type = detect_move_type(cards)
-
     type_map = {
         MoveType.SINGLE:          0,
         MoveType.PAIR:            1,
@@ -44,29 +59,20 @@ def encode_trick(cards: list[Card] | None) -> np.ndarray:
     }
 
     if move_type in type_map:
-        vec[1 + type_map[move_type]] = 1.0
+        vec[offset + 1 + type_map[move_type]] = 1.0
 
-    # Main rank (max rank in trick) — normalized by 15 (max rank = 2 = 15)
+    # 4. Rank and Suit
     max_rank = max(c.rank for c in cards)
-    vec[7] = max_rank / 15.0
+    vec[offset + 7] = max_rank / 15.0
 
-    # Highest card suit (suit 1..4 → index 0..3)
     highest = max(cards, key=lambda c: (c.rank, c.suit))
-    vec[8 + (highest.suit - 1)] = 1.0   # vec[8]..vec[11]
+    vec[offset + 8 + (highest.suit - 1)] = 1.0
 
-    # Trick length
-    vec[12] = len(cards) / 13.0
-
-    # Is two (heo)
-    vec[13] = 1.0 if max_rank == 15 else 0.0
-
-    # Is beatable by normal same-type card (not a two)
-    vec[14] = 0.0 if max_rank == 15 else 1.0
-
-    # Relative strength (emphasis feature)
-    vec[15] = max_rank / 15.0
-
-    # Is special combo (四条 or 双顺)
-    vec[16] = 1.0 if move_type in [MoveType.FOUR_OF_KIND, MoveType.DOUBLE_STRAIGHT] else 0.0
+    # 5. Metadata
+    vec[offset + 12] = len(cards) / 13.0
+    vec[offset + 13] = 1.0 if max_rank == 15 else 0.0
+    vec[offset + 14] = 0.0 if max_rank == 15 else 1.0
+    vec[offset + 15] = max_rank / 15.0
+    vec[offset + 16] = 1.0 if move_type in [MoveType.FOUR_OF_KIND, MoveType.DOUBLE_STRAIGHT] else 0.0
 
     return vec
