@@ -2,8 +2,8 @@
 from core.rules import detect_move_type, MoveType
 
 # ─── Terminal reward ─────────────────────────────────────────────────────────
-WIN_REWARD   = 30.0
-LOSE_PENALTY = -30.0
+WIN_REWARD   = 60.0
+LOSE_PENALTY = -60.0
 
 # ─── Step rewards ────────────────────────────────────────────────────────────
 PLAY_CARD_REWARD = 0.05
@@ -26,6 +26,10 @@ WASTE_POWER_CARD  = -3.0
 # ─── Efficiency bonus ────────────────────────────────────────────────────────
 LARGE_COMBO_BONUS  = +1.0    # thưởng khi đánh sảnh/đôi thông dài
 CLEAR_HAND_BONUS   = +0.5    # thưởng mỗi lá đánh khi ≤5 lá còn
+
+# ─── Balance terminal vs shaping ─────────────────────────────────────────────
+SHAPING_SCALE = 0.35         # giảm tác động reward shaping
+SHAPING_CLIP  = 12.0         # tránh step reward quá lớn gây lệch objective
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -148,12 +152,13 @@ def compute_reward(
     player_id: int,
     player_rank: int | None = None
 ) -> float:
-    reward = action_reward(
+    shaped_reward = action_reward(
         action_cards=action_cards,
         prev_state=prev_state,
         next_state=next_state,
         player_id=player_id
     )
+    reward = max(-SHAPING_CLIP, min(SHAPING_CLIP, shaped_reward * SHAPING_SCALE))
 
     if done:
         reward += terminal_reward(player_rank)

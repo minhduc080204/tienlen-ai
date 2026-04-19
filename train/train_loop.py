@@ -13,6 +13,7 @@ from action.action_mask import build_action_mask_from_legal_moves
 from action.action_space import ACTION_SPACE
 from core.action_executor import resolve_action
 from core.rules import get_legal_moves, detect_move_type
+from env.reward import WIN_REWARD, LOSE_PENALTY
 
 from rl.agent import PPOAgent
 from rl.model import TienLenPolicy
@@ -37,13 +38,30 @@ def setup_agents(device, lr, has_checkpoint=False, checkpoint_path=None):
     """Khởi tạo model và agent chính."""
     model = TienLenPolicy(state_dim=STATE_DIM, action_dim=len(ACTION_SPACE)).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
-    main_agent = PPOAgent(model=model, optimizer=optimizer, gamma=config.GAMMA, clip_eps=0.2)
+    main_agent = PPOAgent(
+        model=model,
+        optimizer=optimizer,
+        gamma=config.GAMMA,
+        clip_eps=0.2,
+        entropy_coef=config.ENTROPY_COEF_PHASE_1,
+        value_coef=config.VALUE_COEF,
+        target_kl=config.TARGET_KL,
+        value_clip_eps=config.VALUE_CLIP_EPS,
+        normalize_returns=config.NORMALIZE_RETURNS,
+    )
     
     if has_checkpoint and checkpoint_path:
         main_agent.load(checkpoint_path)
         print(f"🔄 Loaded checkpoint: {checkpoint_path}")
     
     return main_agent
+
+def get_entropy_coef_for_phase(phase: int) -> float:
+    if phase == 1:
+        return config.ENTROPY_COEF_PHASE_1
+    if phase == 2:
+        return config.ENTROPY_COEF_PHASE_2
+    return config.ENTROPY_COEF_PHASE_3
 
 def train():
     args = parse_args()
@@ -90,6 +108,14 @@ def train():
             phase = 2 # Self-Play: vs Frozen Version
         else:
             phase = 3 # Shared Model: 4-way PPO update
+
+        # Entropy schedule + linear LR decay
+        main_agent.set_entropy_coef(get_entropy_coef_for_phase(phase))
+        progress = (episode - 1) / max(1, args.episodes - 1)
+        lr_scale = max(config.LR_MIN_FACTOR, 1.0 - progress)
+        current_lr = config.LR * lr_scale
+        for param_group in main_agent.optimizer.param_groups:
+            param_group["lr"] = current_lr
 
         # Thiết lập danh sách người chơi cho episode này
         episode_agents = [None] * config.NUM_PLAYERS
@@ -185,7 +211,7 @@ def train():
         # Terminal Reward & GAE
         for i in range(config.NUM_PLAYERS):
             if len(episode_buffers[i]) > 0:
-                final_reward = 30.0 if i == winner else -30.0
+                final_reward = WIN_REWARD if i == winner else LOSE_PENALTY
                 episode_buffers[i].rewards[-1] += final_reward
                 adv, ret = episode_buffers[i].compute_gae(config.GAMMA, config.LAMBDA)
                 cumulative_buffer.extend(episode_buffers[i], adv, ret)
@@ -201,6 +227,7 @@ def train():
                 returns=cumulative_buffer.returns,
                 advantages=cumulative_buffer.advantages,
                 action_masks=cumulative_buffer.action_masks,
+                old_values=cumulative_buffer.values,
                 epochs=config.PPO_EPOCHS,
                 batch_size=config.BATCH_SIZE
             )
