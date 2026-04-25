@@ -16,7 +16,7 @@ from core.card import Card
 # [15]    estimated four-of-kind remaining (binary)
 # [16]    estimated double-straight potential (binary)
 # [17-19] relative rank pressure per opponent (ước tính sức mạnh)
-# [20-22] pass flag estimate (đối thủ nhiều bài → likely holding big cards)
+# [20-22] passed flags per opponent (đối thủ đã bỏ lượt trong vòng này chưa)
 # [23]    opponent avg cards / 13
 # [24-29] reserved / zero-padded
 
@@ -28,15 +28,17 @@ def encode_opponents(
     player_id: int,
     num_players: int,
     discard_pile: list[Card] | None = None,
+    passed_players: list[int] | None = None,
 ) -> np.ndarray:
     """
     Encode rich opponent information.
 
     Args:
-        opponent_counts: số lá còn lại của từng đối thủ (theo thứ tự relative)
+        opponent_counts: số lá còn lại của từng đối thủ (theo thứ tự relative: người tiếp theo là index 0)
         player_id: id của AI player
         num_players: tổng số người chơi
         discard_pile: bài đã đánh (dùng để ước tính bài mạnh còn lại)
+        passed_players: danh sách ID những người đã bỏ lượt trong vòng này
     """
 
     assert num_players in [2, 3, 4]
@@ -46,6 +48,12 @@ def encode_opponents(
 
     if not opponent_counts:
         return vec
+
+    # Helper: get relative opponent IDs
+    # If player_id=0, num_players=4, opponents are 1, 2, 3.
+    opp_ids = []
+    for i in range(1, num_players):
+        opp_ids.append((player_id + i) % num_players)
 
     # --------------------
     # [0-2] Card count per opponent
@@ -72,8 +80,7 @@ def encode_opponents(
     vec[10] = max(opponent_counts) / 13.0
 
     # --------------------
-    # [11] Urgent: any opponent <= 2 cards
-    # [12] Critical: any opponent <= 1 card
+    # [11-12] Urgent/Critical
     # --------------------
     vec[11] = 1.0 if any(c <= 2 for c in opponent_counts) else 0.0
     vec[12] = 1.0 if any(c <= 1 for c in opponent_counts) else 0.0
@@ -85,57 +92,41 @@ def encode_opponents(
     vec[13] = few_count / len(opponent_counts)
 
     # --------------------
-    # [14-16] Ước tính bài mạnh còn lại (từ discard pile)
-    # Nếu không có discard info, mặc định assume tất cả còn
+    # [14-16] Card counting estimation
     # --------------------
     if discard_pile:
         discarded_ranks = Counter(c.rank for c in discard_pile)
-
-        # Ước tính heo còn lại
         twos_played = discarded_ranks.get(15, 0)
         vec[14] = max(0, 4 - twos_played) / 4.0
-
-        # Tứ quý đã xuất hiện chưa
         any_fourofkind = any(v == 4 for v in discarded_ranks.values())
         vec[15] = 0.0 if any_fourofkind else 1.0
-
-        # Tiềm năng đôi thông (ít bài đã ra → nhiều tiềm năng)
-        discard_ratio = len(discard_pile) / 52.0
-        vec[16] = 1.0 - discard_ratio
+        vec[16] = 1.0 - (len(discard_pile) / 52.0)
     else:
-        # Không có info → assume worst case
-        vec[14] = 1.0   # assume 4 twos still in (normalized)
-        vec[15] = 1.0   # assume four-of-kind possible
-        vec[16] = 1.0   # assume double-straight possible
+        vec[14] = 1.0
+        vec[15] = 1.0
+        vec[16] = 1.0
 
     # --------------------
-    # [17-19] Relative rank pressure (đối thủ ít bài → áp lực cao)
-    # Dùng exponential: ít bài hơn = nguy hiểm hơn
+    # [17-19] Pressure
     # --------------------
     for i, count in enumerate(opponent_counts):
-        if count == 0:
-            pressure = 1.0
-        elif count <= 2:
-            pressure = 0.9
-        elif count <= 5:
-            pressure = 0.6
-        elif count <= 8:
-            pressure = 0.3
-        else:
-            pressure = 0.1
+        pressure = 1.0 if count <= 1 else (0.7 if count <= 3 else (0.3 if count <= 6 else 0.1))
         vec[17 + i] = pressure
 
     # --------------------
-    # [20-22] Holding big cards estimate
-    # Đối thủ nhiều bài → likely giữ bài lớn và pass (rate ước tính)
+    # [20-22] Passed flags (CRITICAL FOR STRATEGY)
     # --------------------
-    for i, count in enumerate(opponent_counts):
-        vec[20 + i] = (count / 13.0) * 0.5  # proxy: nhiều bài → có thể có nhiều bài mạnh
+    if passed_players is not None:
+        for i, opp_id in enumerate(opp_ids):
+            if opp_id in passed_players:
+                vec[20 + i] = 1.0
 
     # --------------------
     # [23] Average opponent cards / 13
     # --------------------
     vec[23] = sum(opponent_counts) / (len(opponent_counts) * 13.0)
+
+    return vec
 
     # [24-29] zero-padded (future use)
 

@@ -14,15 +14,14 @@ class MetricTracker:
         )
 
         self.headers = [
-            "episode", "win_rate", "avg_reward", "avg_turns", "avg_entropy"
+            "episode", "phase", "win_rate", "best_win_rate", "avg_reward", 
+            "avg_turns", "avg_entropy", "policy_loss", "value_loss", "entropy_loss"
         ]
         # Add move types to headers
         for move_type in MoveType:
             self.headers.append(f"move_{move_type.name.lower()}")
 
         self.history = []
-
-        # Current episode metrics (for training)
         self.reset_episode_stats()
 
         # Initialize CSV
@@ -56,10 +55,21 @@ class MetricTracker:
         })
         self.reset_episode_stats()
 
-    def save_to_csv(self, episode, win_rate, avg_reward, avg_turns, avg_entropy, move_stats):
-        row = [episode, win_rate, avg_reward, avg_turns, avg_entropy]
+    def save_to_csv(self, episode, phase, win_rate, best_win_rate, avg_reward, avg_turns, avg_entropy, losses, move_stats):
+        row = [
+            episode, 
+            phase, 
+            f"{win_rate:.4f}", 
+            f"{best_win_rate:.4f}", 
+            f"{avg_reward:.2f}", 
+            f"{avg_turns:.2f}", 
+            f"{avg_entropy:.4f}",
+            f"{losses.get('policy_loss', 0):.6f}",
+            f"{losses.get('value_loss', 0):.6f}",
+            f"{losses.get('entropy_loss', 0):.6f}"
+        ]
         for move_type in MoveType:
-            row.append(move_stats.get(move_type, 0))
+            row.append(f"{move_stats.get(move_type, 0):.4f}")
 
         with open(self.filename, 'a', newline='') as f:
             writer = csv.writer(f)
