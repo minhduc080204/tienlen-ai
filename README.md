@@ -1,164 +1,131 @@
-# TienLen AI — PPO Training
+# Tien Len AI (PPO)
 
-Dự án train AI chơi Tiến Lên Miền Nam bằng Reinforcement Learning (PPO).
+An end-to-end reinforcement learning project for **Tien Len Mien Nam (Vietnamese Southern Poker)** using **Proximal Policy Optimization (PPO)**.
 
----
+This repository includes:
 
-## Cài đặt
+1. A full game environment and rule engine
+2. Multi-phase PPO training pipeline
+3. FastAPI inference service for real-time action prediction
+
+## Highlights
+
+- **235-dim state encoder** with hand, current trick, opponent signals, and discard memory
+- **Action masking** so the model only chooses legal moves
+- **Multi-phase training**: warm-up vs RuleBot, self-play, and shared-policy learning
+- **Checkpointing** and training metrics logging
+
+## State Representation (235 dims)
+
+| Component | Dims | Description |
+|---|---:|---|
+| Hand | 65 | 52-bit card presence + 13 hand statistics |
+| Current Trick | 70 | 52-bit trick presence + 18 trick features |
+| Opponent Info | 30 | Opponent card counts, danger score, passed flags |
+| Discard Pile | 70 | 52-bit seen cards + 18 aggregate features |
+| **Total** | **235** | |
+
+## Project Structure
+
+```text
+tienlen-ai/
+├── action/       # Action space and legal action mask
+├── bots/         # Rule-based opponents for warm-up phase
+├── core/         # Cards, deck, rules, action resolution
+├── env/          # TienLen environment and rewards
+├── inference/    # FastAPI model-serving API
+├── rl/           # PPO model, agent, and rollout buffer
+├── state/        # State encoding (235 dims)
+├── train/        # Training loops and config
+├── checkpoints/  # Saved model weights
+└── logs/         # Training metrics/logs
+```
+
+## Installation
 
 ```bash
-# Tạo virtual environment
 python -m venv venv
+```
 
-# Kích hoạt (Windows)
-.\venv\Scripts\activate
-source venv/bin/activate
+Activate the environment:
 
-# Kích hoạt (Linux/macOS)
-source venv/bin/activate
+- **Windows (PowerShell)**
+  ```powershell
+  .\venv\Scripts\Activate.ps1
+  ```
+- **Linux/macOS**
+  ```bash
+  source venv/bin/activate
+  ```
 
-# Cài thư viện
+Install dependencies:
+
+```bash
 pip install -r requirements.txt
 ```
 
----
+## Training
 
-## 🖥️ Chạy trên Local (CPU)
-
-### Train nhanh để test
+### Quick local run (CPU)
 
 ```bash
-python -m train.train_loop --episodes 100 --save-every 50 --batch-size 64 --lr 2.5e-4 --device cpu
+python -m train.train_loop --episodes 500 --device cpu
 ```
 
-### Train đầy đủ (nếu có GPU local)
+### Longer run (GPU)
 
 ```bash
-python -m train.train_loop \
-  --episodes 5000 \
-  --save-every 500 \
-  --batch-size 128 \
-  --lr 2.5e-4 \
-  --gamma 0.99 \
-  --lam 0.95 \
-  --ppo-epochs 4 \
-  --device cuda
+python -m train.train_loop --episodes 100000 --device cuda
 ```
 
-### Chạy Inference API
+### Initialize from an existing checkpoint
+
+```bash
+python -m train.train_loop --episodes 3000 --init-model-path checkpoints/latest.pt
+```
+
+### Alternative shared-model training entrypoint
+
+```bash
+python -m train.train_loop_share_model --episodes 5000 --device auto
+```
+
+## Run Inference API
+
+Start the FastAPI server:
 
 ```bash
 uvicorn inference.ai_service:app --host 0.0.0.0 --port 8000
 ```
 
-> API nhận POST `/predict` với body JSON:
-> ```json
-> {
->   "hand": [{"rank": 3, "suit": 1}],
->   "opponent_counts": [13, 12, 11],
->   "current_trick": [],
->   "player_id": 0,
->   "num_players": 4,
->   "discard_pile": []
-> }
-> ```
-> `rank`: 3–15 (2 = 15) · `suit`: 1=♠ 2=♣ 3=♦ 4=♥
+Health check:
 
----
-
-## ☁️ Chạy trên Kaggle (GPU T4 — miễn phí)
-
-### Bước 1 — Upload code lên Kaggle Dataset
-
-Zip toàn bộ source (không bao gồm `venv/`, `checkpoints/`, `.git/`) rồi tạo **Kaggle Dataset** mới.
-
-### Bước 2 — Tạo Notebook mới, chọn GPU T4 x2
-
-Dán đoạn code sau vào cell đầu tiên:
-
-```python
-import subprocess, sys, os
-
-# Mount dataset (thay YOUR_USERNAME/tienlen-ai bằng tên dataset của bạn)
-DATASET = "YOUR_USERNAME/tienlen-ai"
-
-# Cài thư viện
-subprocess.run([sys.executable, "-m", "pip", "install", "-r",
-                "/kaggle/input/tienlen-ai/requirements.txt", "-q"])
-
-# Copy code ra working dir để import được
-os.makedirs("/kaggle/working/tienlen", exist_ok=True)
-subprocess.run(["cp", "-r", "/kaggle/input/tienlen-ai/.", "/kaggle/working/tienlen/"])
-os.chdir("/kaggle/working/tienlen")
-sys.path.insert(0, "/kaggle/working/tienlen")
+```bash
+curl http://127.0.0.1:8000/health
 ```
 
-```python
-# Train chính
-subprocess.run([
-    sys.executable, "-m", "train.train_loop",
-    "--episodes",   "30000",
-    "--save-every", "3000",
-    "--batch-size", "256",
-    "--lr",         "3e-4",
-    "--gamma",      "0.99",
-    "--lam",        "0.95",
-    "--ppo-epochs", "4",
-    "--device",     "cuda",
-])
+Sample prediction request:
+
+```bash
+curl -X POST http://127.0.0.1:8000/predict \
+  -H "Content-Type: application/json" \
+  -d '{
+    "hand": [{"rank": 3, "suit": 1}, {"rank": 7, "suit": 4}, {"rank": 15, "suit": 2}],
+    "opponent_counts": [13, 13, 13],
+    "current_trick": [],
+    "discard_pile": [],
+    "player_id": 0,
+    "num_players": 4,
+    "inference_mode": "greedy",
+    "temperature": 1.0,
+    "top_k_actions": 3
+  }'
 ```
 
-```python
-# Download checkpoint sau khi train xong
-from kaggle_secrets import UserSecretsClient  # nếu cần
-import shutil
+> Card input format uses **rank 3-15** (where 2 is 15) and **suit 1-4**.
 
-# Copy checkpoint ra output để download
-shutil.copy("checkpoints/latest.pt", "/kaggle/working/latest.pt")
-print("✅ Checkpoint saved to /kaggle/working/latest.pt")
-```
+## Tests
 
-### Các tham số CLI (train_loop.py)
-
-| Tham số | Mặc định | Mô tả |
-|---|---|---|
-| `--episodes` | 3000 | Số ván train |
-| `--batch-size` | 128 | Batch size PPO |
-| `--lr` | 2.5e-4 | Learning rate |
-| `--gamma` | 0.99 | Discount factor |
-| `--lam` | 0.95 | GAE lambda |
-| `--ppo-epochs` | 4 | Số lần update mỗi batch |
-| `--save-every` | 100 | Lưu checkpoint mỗi N episodes |
-| `--device` | auto | `cpu` / `cuda` / `auto` |
-
----
-
-## 🏗️ Kiến trúc State (183 dims)
-
-| Thành phần | Dims | Mô tả |
-|---|---|---|
-| Hand | 52 | Binary: lá nào đang cầm |
-| Hand stats | 13 | Số lá, heo, đôi, sảnh tiềm năng... |
-| Current trick | 18 | Type, rank, suit, độ mạnh |
-| Opponents | 30 | Số lá, mức nguy hiểm, ước tính bài mạnh |
-| Discard pile | 52 | Binary: lá nào đã ra |
-| Discard stats | 18 | Heo đã ra, tứ quý, tỉ lệ bài, nhóm rank |
-| **Total** | **183** | |
-
----
-
-## 📁 Cấu trúc Project
-
-```
-tienlen-ai/
-├── core/           # Card, Deck, Rules, MoveType
-├── state/          # State encoding (183 dims)
-├── env/            # TienLenEnv, GameState, Reward
-├── rl/             # PPO Agent, Model, Buffer
-├── action/         # Action space, mask
-├── bots/           # RuleBot (đối thủ train)
-├── train/          # Train loop, Config
-├── inference/      # FastAPI service
-├── checkpoints/    # Saved model weights
-└── logs/           # Training logs
+```bash
+pytest
 ```
